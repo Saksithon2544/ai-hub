@@ -38,10 +38,23 @@ claude_usage() {
 # codex_usage [codex home]  ->  "win1|%|reset|win2|%|reset"
 # Reads the rate limits saved in the newest Codex session log.
 codex_usage() {
-  local home=${1:-${CODEX_HOME:-$HOME/.codex}} f rl
+  local home=${1:-${CODEX_HOME:-$HOME/.codex}} d e f n rl
   has jq && [ -d "$home/sessions" ] || return 0
-  # sessions/YYYY/MM/DD/rollout-<time>.jsonl, so name order is time order
-  f=$(find "$home/sessions" -type f -name '*.jsonl' 2>/dev/null | sort | tail -n 1)
+  # sessions/YYYY/MM/DD/rollout-<time>.jsonl, so name order is time order. Walk down the
+  # newest year, month and day instead of listing every session ever saved.
+  d=$home/sessions
+  for _ in year month day; do
+    n=
+    for e in "$d"/*; do # sorted, so the last number is the newest
+      e=${e##*/}
+      case $e in '' | *[!0-9]*) ;; *) n=$e ;; esac
+    done
+    [ -n "$n" ] || break
+    d=$d/$n
+  done
+  f=$(find "$d" -type f -name '*.jsonl' 2>/dev/null | sort | tail -n 1)
+  # a layout this does not know: fall back to every session
+  [ -n "$f" ] || f=$(find "$home/sessions" -type f -name '*.jsonl' 2>/dev/null | sort | tail -n 1)
   [ -n "$f" ] || return 0
   rl=$(grep '"rate_limits"' "$f" 2>/dev/null | tail -n 1 | jq -c '[.. | .rate_limits? // empty] | last' 2>/dev/null)
   [ -n "$rl" ] && [ "$rl" != null ] || return 0
@@ -59,7 +72,12 @@ codex_usage() {
 prov_codex_home() {
   local h
   h=$(prov_get "$1" 2 | sed -n 's/.*CODEX_HOME=\([^ ]*\).*/\1/p' | tr -d "\"'")
-  case $h in '~/'*) h=$HOME/${h#\~/} ;; esac
+  # shellcheck disable=SC2088 # the text "~/" as written in the command, expanded here
+  case $h in
+    '~/'*) h=$HOME/${h#\~/} ;;
+    '$HOME/'*) h=$HOME/${h#\$HOME/} ;;
+    '${HOME}/'*) h=$HOME/${h#\$\{HOME\}/} ;;
+  esac
   echo "${h:-${CODEX_HOME:-$HOME/.codex}}"
 }
 

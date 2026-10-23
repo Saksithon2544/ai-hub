@@ -1,13 +1,16 @@
 # shellcheck shell=bash
 # Shared helpers: paths, name checks, confirmation, safe JSON edits.
 
+# shellcheck disable=SC2034 # whole file: its variables are used by the other lib files
 AI_VERSION=0.1.0
 AI_CONFIG_DIR=${AI_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ai-hub}
 AI_STATE_DIR=${AI_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ai-hub}
 AI_PROVIDERS=${AI_PROVIDERS:-$AI_CONFIG_DIR/providers}
 CLA_ROOT=${CLA_ROOT:-$HOME/.claude-accounts}
-# The Claude config dir of the "main" account, as it was when ai started.
+# The Claude config dir of the "main" account, as it was when ai started. A folder inside
+# $CLA_ROOT means ai runs inside a `cla <account>` session (e.g. `! cla ls`): that is not main.
 AI_MAIN_CFG=${CLAUDE_CONFIG_DIR:-}
+case ${AI_MAIN_CFG%/} in "${CLA_ROOT%/}"/*) AI_MAIN_CFG= ;; esac
 TAB=$(printf '\t')
 
 has() { command -v "$1" >/dev/null 2>&1; }
@@ -50,7 +53,8 @@ confirm() {
 #  - skips files that are missing or not valid JSON
 #  - keeps a one-time backup <file>.ai-hub.bak
 #  - only replaces the file when the result is valid, non-empty JSON
-#  - writes back in place, so permissions and symlinks stay as they were
+#  - swaps the new file in with one rename (a running agent never reads half a file),
+#    keeping the permissions; a symlink is written through instead, so it stays a link
 json_edit() {
   local f=$1 tmp
   shift
@@ -59,10 +63,15 @@ json_edit() {
     warn "skipped $f: not valid JSON"
     return 0
   }
-  tmp=$(mktemp "${TMPDIR:-/tmp}/ai-hub.XXXXXX") || return 1
-  if jq "$@" "$f" >"$tmp" 2>/dev/null && [ -s "$tmp" ] && jq -e . "$tmp" >/dev/null 2>&1; then
+  # next to the file (same disk, so mv is a rename), starting as a copy for its permissions
+  tmp=$(mktemp "$f.ai-hub.XXXXXX") || return 1
+  if cp -p "$f" "$tmp" && jq "$@" "$f" >"$tmp" 2>/dev/null && [ -s "$tmp" ] && jq -e . "$tmp" >/dev/null 2>&1; then
     [ -e "$f.ai-hub.bak" ] || cp -p "$f" "$f.ai-hub.bak"
-    cat "$tmp" >"$f"
+    if [ -L "$f" ]; then
+      cat "$tmp" >"$f"
+    else
+      mv -f "$tmp" "$f" && return 0
+    fi
   else
     warn "could not update $f; left it unchanged"
   fi
