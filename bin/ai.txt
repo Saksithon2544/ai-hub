@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# ai-hub: one command for all your AI coding agents. Run `ai help`.
+# Plain bash 3.2+ (the bash built into macOS), Linux and WSL.
+
+# follow symlinks (e.g. ~/.local/bin/ai -> repo/bin/ai) to find the repo
+src=${BASH_SOURCE[0]}
+while [ -L "$src" ]; do
+  dir=$(cd -P "$(dirname "$src")" && pwd)
+  src=$(readlink "$src")
+  case $src in /*) ;; *) src=$dir/$src ;; esac
+done
+AI_HOME=$(cd -P "$(dirname "$src")/.." && pwd)
+
+for f in common providers usage accounts trust failover picker main; do
+  # shellcheck source=/dev/null
+  . "$AI_HOME/lib/$f.sh" || { echo "ai: missing $AI_HOME/lib/$f.sh" >&2; exit 1; }
+done
+ai_main "$@"

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# cla: shortcut for `ai cla ...` (several Claude Code accounts). Run `cla help`.
+src=${BASH_SOURCE[0]}
+while [ -L "$src" ]; do
+  dir=$(cd -P "$(dirname "$src")" && pwd)
+  src=$(readlink "$src")
+  case $src in /*) ;; *) src=$dir/$src ;; esac
+done
+exec bash "$(cd -P "$(dirname "$src")" && pwd)/ai" cla "$@"
