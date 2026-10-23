@@ -77,12 +77,14 @@ EOF
 }
 
 # ── Codex: [projects."<dir>"] trust_level = "trusted" in config.toml
+# (a header may also use single quotes, [projects.'<dir>'], so both forms are checked)
 trust_codex_file() { echo "${CODEX_HOME:-$HOME/.codex}/config.toml"; }
 trust_codex_level() {
-  awk -v h="[projects.\"$1\"]" '
-    $0 == h { s = 1; next }
+  awk -v h1="[projects.\"$1\"]" -v h2="[projects.'$1']" '
+    { t = $0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", t) }
+    t == h1 || t == h2 { s = 1; next }
     /^[[:space:]]*\[/ { s = 0 }
-    s && /^[[:space:]]*trust_level[[:space:]]*=/ { v = $0; sub(/^[^=]*=/, "", v); gsub(/["[:space:]]/, "", v); print v; exit }' \
+    s && /^[[:space:]]*trust_level[[:space:]]*=/ { v = $0; sub(/^[^=]*=/, "", v); gsub(/["'\''[:space:]]/, "", v); print v; exit }' \
     "$(trust_codex_file)" 2>/dev/null
 }
 trust_codex_has() { [ "$(trust_codex_level "$1")" = trusted ]; }
@@ -90,7 +92,8 @@ trust_codex_add() {
   local f
   f=$(trust_codex_file)
   [ -f "$f" ] || return 0                         # Codex not set up
-  grep -qF "[projects.\"$1\"]" "$f" && return 0   # any existing choice wins
+  # any existing choice wins
+  grep -qF "[projects.\"$1\"]" "$f" || grep -qF "[projects.'$1']" "$f" && return 0
   printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$1" >>"$f"
 }
 

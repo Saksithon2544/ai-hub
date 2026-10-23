@@ -49,14 +49,40 @@ fo_order() {
   done
 }
 
-# seconds until a limited account is tried again; fails when it is free
+# seconds until a limited account is tried again; fails when it is free.
+# The mark holds the reset time (epoch) when it was known; else AI_FO_COOLDOWN from its age.
 fo_limited() {
   local f t left
   f=$(fo_mark "$1")
   [ -f "$f" ] || return 1
-  t=$(date -r "$f" +%s 2>/dev/null) || return 1
-  left=$((t + AI_FO_COOLDOWN - $(date +%s)))
+  t=$(head -n 1 "$f" 2>/dev/null)
+  case $t in
+    '' | *[!0-9]*)
+      t=$(date -r "$f" +%s 2>/dev/null) || return 1
+      t=$((t + AI_FO_COOLDOWN))
+      ;;
+  esac
+  left=$((t - $(date +%s)))
   [ "$left" -gt 0 ] && echo "$left"
+}
+
+# fo_reset_at <account> <error text>: when the limit resets (epoch), if known:
+# the time in the error ("...usage limit reached|<epoch>"), else the latest reset of a
+# window at 100% in the saved plan usage (usage/usage.json, see usage.sh).
+# Only a time in the next 8 days counts.
+fo_reset_at() {
+  local now f t
+  now=$(date +%s)
+  f=$(acct_dir "$1")/usage/usage.json
+  for t in "$(printf '%s' "$2" | sed -n 's/.*|\([0-9]\{10\}\).*/\1/p' | head -n 1)" \
+    "$([ -r "$f" ] && jq -r '[.rate_limits[]? | select((.used_percentage // 0) >= 100) | .resets_at // empty | floor] | max // empty' "$f" 2>/dev/null)"; do
+    case $t in '' | *[!0-9]*) continue ;; esac
+    if [ "$t" -gt "$now" ] && [ "$t" -lt $((now + 691200)) ]; then
+      echo "$t"
+      return 0
+    fi
+  done
+  return 1
 }
 
 fo_show() {
@@ -115,26 +141,74 @@ fo_next() {
   return 1
 }
 
-# newest session transcript an account wrote since <marker file>
-# (projects/<folder>/<session>.jsonl; subagent files deeper down are ignored)
+# the "/projects/<folder>" prefixes Claude Code keeps this directory's sessions under:
+# the path with every character other than a letter or digit turned into "-"; a name
+# longer than 200 is cut there and gets "-<hash>". Real and logical path both count.
+fo_project_keys() {
+  local p
+  for p in "$(pwd -P)" "$PWD"; do
+    p=$(printf '%s' "$p" | sed 's/[^A-Za-z0-9]/-/g')
+    if [ "${#p}" -le 200 ]; then echo "/projects/$p/"; else echo "/projects/$(printf '%.200s' "$p")-"; fi
+  done | sort -u
+}
+
+# newest session transcript an account wrote in this directory since <marker file>
+# (projects/<folder>/<session>.jsonl; subagent files deeper down are ignored).
+# Only this directory's folder: another window on the same account is never picked up.
 fo_transcript() {
-  local f
+  local f k keys=
+  for k in $(fo_project_keys); do keys="$keys -e $k"; done
+  # shellcheck disable=SC2086 # $keys is "-e <key>..." and the keys have no spaces
   find "$(acct_dir "$1")/projects" -mindepth 2 -maxdepth 2 -type f -name '*.jsonl' -newer "$2" 2>/dev/null |
+    grep -F $keys |
     while IFS= read -r f; do printf '%s\t%s\n' "$(date -r "$f" +%s)" "$f"; done |
     sort -n | tail -n 1 | cut -f2-
 }
 
-# did the session end on a usage-limit error? (its last reply is an API error about a limit)
-fo_hit_limit() {
+# the text of the session's last reply, when that reply is an API error
+fo_error_text() {
   tail -n 50 "$1" | jq -Rc 'fromjson? | select(.type == "assistant")' 2>/dev/null | tail -n 1 |
     jq -r 'select(.isApiErrorMessage == true) | .message.content
-      | if type == "string" then . else ([.[]? | .text? // empty] | join(" ")) end' 2>/dev/null |
-    grep -qi 'limit'
+      | if type == "string" then . else ([.[]? | .text? // empty] | join(" ")) end' 2>/dev/null
+}
+
+# is <error text> about a plan limit? ("Claude AI usage limit reached", "5-hour limit
+# reached", "You've hit your limit"); a short rate limit (429) or a context limit is not.
+fo_hit_limit() {
+  printf '%s' "$1" | grep -Eqi 'usage limit|hit your limit|(hour|weekly|session|opus|sonnet) limit reached'
+}
+
+# fo_keep_args [claude args]: the args a moved session starts with, in FO_ARGS. Drops what
+# picks or starts a session (--resume/-r [id], --continue/-c, --session-id <id>,
+# --fork-session, --print/-p) and a prompt (it was already sent); keeps the other options.
+# A value is kept after the options below, or written as --option=value.
+fo_keep_args() {
+  FO_ARGS=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+      -r | --resume) case ${2:-} in -* | '') ;; *) shift ;; esac ;;
+      --session-id) shift ;;
+      -c | --continue | --fork-session | -p | --print | --resume=* | --session-id=*) ;;
+      --model | --fallback-model | --permission-mode | --settings | --setting-sources | \
+        --agent | --agents | --add-dir | --mcp-config | --allowedTools | --allowed-tools | \
+        --disallowedTools | --disallowed-tools | --tools | --plugin-dir | --betas | \
+        --append-system-prompt | --system-prompt | --output-format | --input-format)
+        FO_ARGS[${#FO_ARGS[@]}]=$1
+        if [ $# -gt 1 ]; then
+          shift
+          FO_ARGS[${#FO_ARGS[@]}]=$1
+        fi
+        ;;
+      -*) FO_ARGS[${#FO_ARGS[@]}]=$1 ;;
+    esac
+    shift
+  done
 }
 
 # fo_run <account> [claude args]: run, and move on to the next account at each limit
 fo_run() {
-  local a=$1 tried marker t sid dest rc ans next
+  local a=$1 tried marker t msg sid dest rc ans next
+  local -a FO_ARGS
   shift
   tried=" $a "
   mkdir -p "$AI_STATE_DIR/limited" || return 1
@@ -144,17 +218,21 @@ fo_run() {
     rc=$?
     t=$(fo_transcript "$a" "$marker")
     rm -f "$marker"
-    if [ -z "$t" ] || ! fo_hit_limit "$t"; then return "$rc"; fi
+    [ -n "$t" ] || return "$rc"
+    msg=$(fo_error_text "$t")
+    fo_hit_limit "$msg" || return "$rc"
 
-    touch "$(fo_mark "$a")"
+    # the mark holds the reset time when known; empty means AI_FO_COOLDOWN from now
+    fo_reset_at "$a" "$msg" >"$(fo_mark "$a")"
     if ! next=$(fo_next "$tried"); then
       warn "$a hit its usage limit and no other account is free right now (see: ai failover status)"
       return 1
     fi
-    printf '\n\033[38;5;173m%s hit its usage limit.\033[0m Continue this session on \033[1m%s\033[0m? [Y/n] ' "$a" "$next" >&2
+    # default No: moving a conversation to another account (e.g. work -> personal) is a real choice
+    printf '\n\033[38;5;173m%s hit its usage limit.\033[0m Continue this session on \033[1m%s\033[0m? [y/N] ' "$a" "$next" >&2
     ans=
     read -r ans
-    case $ans in n | N | no | NO) return 1 ;; esac
+    case $ans in y | Y | yes | YES) ;; *) return 1 ;; esac
 
     # sessions live per config folder: copy it (and its subagent folder) to the next account
     dest=$(acct_dir "$next")/projects/$(basename "$(dirname "$t")")
@@ -167,7 +245,8 @@ fo_run() {
       [ -d "${t%.jsonl}" ] && cp -Rp "${t%.jsonl}" "$dest/"
     fi
     sid=$(basename "$t" .jsonl)
-    set -- --resume "$sid" "$AI_FO_PROMPT"
+    fo_keep_args "$@"
+    set -- ${FO_ARGS[@]+"${FO_ARGS[@]}"} --resume "$sid" "$AI_FO_PROMPT"
     a=$next
     tried="$tried$a "
   done

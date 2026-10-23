@@ -119,7 +119,7 @@ cla_ls() {
 }
 
 cla_add() {
-  local n=${1:-} d f
+  local n=${1:-} d f m
   [ -n "$n" ] || die "usage: cla add <name>"
   need_name "$n"
   is_reserved "$n" && die "'$n' is reserved, pick another name"
@@ -127,9 +127,10 @@ cla_add() {
   if [ -e "$d" ] || [ -L "$d" ]; then die "'$n' already exists"; fi
   mkdir -p "$d" || die "could not create $d"
   chmod 700 "$d"
+  m=$(acct_dir main)
   for f in $CLA_SHARED; do
-    if [ -e "$HOME/.claude/$f" ] && [ ! -e "$d/$f" ] && [ ! -L "$d/$f" ]; then
-      ln -s "$HOME/.claude/$f" "$d/$f"
+    if [ -e "$m/$f" ] && [ ! -e "$d/$f" ] && [ ! -L "$d/$f" ]; then
+      ln -s "$m/$f" "$d/$f"
     fi
   done
   # make sure Claude shows up in the picker

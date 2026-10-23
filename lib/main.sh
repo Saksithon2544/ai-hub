@@ -4,7 +4,7 @@
 ai_main() {
   local sub
   case ${1:-} in
-    ls | add | edit | rm | trust | failover)
+    ls | add | edit | rm | scan | trust | failover)
       sub=$1
       shift
       "ai_$sub" "$@"
@@ -28,6 +28,7 @@ ai ls                               list agents and their launch commands
 ai add  <name> <command> [label]    add an agent      e.g. ai add aider "aider --model sonnet"
 ai edit <name> <command> [label]    change its command
 ai rm   <name>                      remove it from the list
+ai scan                             add known agents installed since (claude codex gemini ...)
 
 cla ...                             several Claude accounts (see: cla help)
 

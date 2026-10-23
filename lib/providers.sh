@@ -26,6 +26,17 @@ prov_seed() {
     has "$n" && printf '%s\t%s\t%s\n' "$n" "$n" "$(prov_label "$n")"
   done >"$AI_PROVIDERS"
 }
+# ai scan: add the known agents installed since (the list is only seeded on first run)
+ai_scan() {
+  local n found=
+  prov_seed
+  for n in $AI_KNOWN; do
+    if has "$n" && ! prov_has "$n"; then
+      prov_put "$n" "$n" "$(prov_label "$n")" && echo "added $n" && found=1
+    fi
+  done
+  [ -n "$found" ] || echo "nothing new. installed agents are already listed (see: ai ls)"
+}
 prov_names() {
   prov_seed
   cut -f1 "$AI_PROVIDERS"
