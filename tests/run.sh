@@ -34,6 +34,13 @@ fi
 exit 0
 EOF
 chmod +x "$tmp/bin/claude"
+# fake codex: logs "<CODEX_HOME folder>|<args>" (a handed-over prompt spans several lines)
+cat >"$tmp/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+printf '%s|%s\n' "$(basename "${CODEX_HOME:-$HOME/.codex}")" "$*" >>"$HOME/codex.log"
+exit 0
+EOF
+chmod +x "$tmp/bin/codex"
 export PATH="$tmp/bin:$PATH"
 
 fails=0
@@ -108,6 +115,36 @@ check "ai scan adds an agent installed later" grep -q "^qwen${TAB}qwen${TAB}Qwen
 check "ai scan adds it once" test "$(ai scan >/dev/null 2>&1; grep -c '^qwen' "$P")" = 1
 ai rm qwen >/dev/null 2>&1
 rm -f "$tmp/bin/qwen"
+
+echo "codex accounts"
+mkdir -p "$HOME/.codex"
+echo 'model = "o3"' >"$HOME/.codex/config.toml"
+check "ai codex add .. is refused" eval '! ai codex add ..'
+check "ai codex add ../x is refused" eval '! ai codex add ../x'
+check "reserved name is refused" eval '! ai codex add ls'
+ai codex add work >/dev/null 2>&1
+check "ai codex add creates the account" test -d "$HOME/.codex-accounts/work"
+check "codex config is shared by a link" test "$(readlink "$HOME/.codex-accounts/work/config.toml")" = "$HOME/.codex/config.toml"
+check "ai codex add twice is refused" eval '! ai codex add work'
+: >"$HOME/codex.log"
+ai codex work --x >/dev/null 2>&1
+check "ai codex <name> starts codex with its CODEX_HOME" grep -qx 'work|--x' "$HOME/codex.log"
+ai codex main >/dev/null 2>&1
+check "ai codex main uses ~/.codex" grep -qx '.codex|' "$HOME/codex.log"
+: >"$HOME/codex.log"
+CODEX_HOME=$HOME/.codex-accounts/work bash "$here/bin/ai" codex main >/dev/null 2>&1
+check "inside a codex account, main is still ~/.codex" grep -qx '.codex|' "$HOME/codex.log"
+check "ai codex ls says it is not logged in" sh -c 'bash "$1/bin/ai" codex ls | grep work | grep -q "not logged in"' _ "$here"
+: >"$HOME/.codex-accounts/work/auth.json"
+check "ai codex ls says it is logged in" sh -c 'bash "$1/bin/ai" codex ls | grep work | grep -q "logged in" && ! bash "$1/bin/ai" codex ls | grep work | grep -q "not logged"' _ "$here"
+check "the picker lists the Codex account" sh -c 'printf "q\n" | bash "$1/bin/ai" 2>&1 | grep -q "Codex (work)"' _ "$here"
+check "ai codex picks only Codex accounts" sh -c 'printf "q\n" | bash "$1/bin/ai" codex 2>&1 | grep -q "Codex (work)" && ! printf "q\n" | bash "$1/bin/ai" codex 2>&1 | grep -q "Claude"' _ "$here"
+check "ai codex rm main is refused" eval '! ai codex rm main'
+ai codex mv work job >/dev/null 2>&1
+check "ai codex mv renames" test -d "$HOME/.codex-accounts/job"
+ai codex rm job >/dev/null 2>&1
+check "ai codex rm moves to the trash" sh -c 'ls "$1/.codex-accounts/.trash" | grep -q "^job-"' _ "$HOME"
+check "ai codex rm removes it from the list" test ! -e "$HOME/.codex-accounts/job"
 
 if command -v jq >/dev/null 2>&1; then
   echo "usage"
@@ -205,6 +242,31 @@ if command -v jq >/dev/null 2>&1; then
   check "hit your limit counts" hit "You've hit your limit · resets 5pm"
   check "a 429 rate limit does not count" eval '! hit "API Error: 429 rate limit exceeded"'
   check "a context limit does not count" eval '! hit "Context limit reached · /compact or /clear to continue"'
+
+  echo "failover to codex"
+  ai codex add helper >/dev/null 2>&1
+  check "Codex is not in the order unless you add it" eval "! bash \"$here/bin/ai\" failover status | grep -q codex:"
+  check "order refuses an unknown Codex account" eval '! ai failover order codex:nope'
+  ai failover order a codex:helper >/dev/null 2>&1
+  check "order accepts a Codex account" sh -c 'bash "$1/bin/ai" failover status | grep -q "codex:helper"' _ "$here"
+  ai failover clear >/dev/null 2>&1
+  : >"$HOME/codex.log"
+  : >"$HOME/claude.log"
+  (cd "$tmp/work" && printf '\n' | bash "$here/bin/cla" a) >/dev/null 2>&1
+  check "just enter does not hand over to Codex" test ! -s "$HOME/codex.log"
+  ai failover clear >/dev/null 2>&1
+  (cd "$tmp/work" && printf 'y\n' | bash "$here/bin/cla" a) >/dev/null 2>&1
+  check "the session is handed to Codex" grep -q '^helper|' "$HOME/codex.log"
+  check "Codex gets the conversation" grep -qx 'hi' "$HOME/codex.log"
+  check "the API error is not handed over" eval "! grep -q 'usage limit reached' \"$HOME/codex.log\""
+  check "nothing after Codex is tried" eval "! grep -q '^b|' \"$HOME/claude.log\""
+  # "### user\nhi" cut to its last 5 bytes ("er\nhi") and then to a line start: "hi"
+  h=$(bash -c 'for f in common failover; do . "$1/lib/$f.sh"; done; AI_FO_HANDOFF_MAX=5 fo_handoff "$2"' _ "$here" \
+    "$HOME/.claude-accounts/a/projects/$wp/sess-123.jsonl")
+  check "a long conversation is cut to its end, at a line start" test "$h" = hi
+  ai codex mv helper aide >/dev/null 2>&1
+  check "ai codex mv keeps its place in the order" grep -qx 'codex:aide' "$HOME/.config/ai-hub/failover-order"
+  ai failover clear >/dev/null 2>&1
   ai failover off >/dev/null 2>&1
 else
   echo "(jq not installed: skipped usage, trust and failover tests)"

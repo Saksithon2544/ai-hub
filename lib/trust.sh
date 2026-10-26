@@ -76,25 +76,44 @@ $(trust_claude_files)
 EOF
 }
 
-# ── Codex: [projects."<dir>"] trust_level = "trusted" in config.toml
+# ── Codex: [projects."<dir>"] trust_level = "trusted" in each account's config.toml
 # (a header may also use single quotes, [projects.'<dir>'], so both forms are checked)
-trust_codex_file() { echo "${CODEX_HOME:-$HOME/.codex}/config.toml"; }
+trust_codex_files() {
+  local a f
+  for a in $(cdx_list); do
+    f=$(cdx_dir "$a")/config.toml
+    [ -f "$f" ] && printf '%s\n' "$f" # a missing file: Codex not set up there
+  done
+}
+# trust_codex_level <dir> <config.toml>
 trust_codex_level() {
   awk -v h1="[projects.\"$1\"]" -v h2="[projects.'$1']" '
     { t = $0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", t) }
     t == h1 || t == h2 { s = 1; next }
     /^[[:space:]]*\[/ { s = 0 }
     s && /^[[:space:]]*trust_level[[:space:]]*=/ { v = $0; sub(/^[^=]*=/, "", v); gsub(/["'\''[:space:]]/, "", v); print v; exit }' \
-    "$(trust_codex_file)" 2>/dev/null
+    "$2" 2>/dev/null
 }
-trust_codex_has() { [ "$(trust_codex_level "$1")" = trusted ]; }
+trust_codex_has() {
+  local f
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ "$(trust_codex_level "$1" "$f")" = trusted ] && return 0
+  done <<EOF
+$(trust_codex_files)
+EOF
+  return 1
+}
+# accounts sharing one config.toml by a link: the first add writes it, the rest see it there
 trust_codex_add() {
   local f
-  f=$(trust_codex_file)
-  [ -f "$f" ] || return 0                         # Codex not set up
-  # any existing choice wins
-  grep -qF "[projects.\"$1\"]" "$f" || grep -qF "[projects.'$1']" "$f" && return 0
-  printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$1" >>"$f"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    # any existing choice wins
+    grep -qF "[projects.\"$1\"]" "$f" || grep -qF "[projects.'$1']" "$f" && continue
+    printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$1" >>"$f"
+  done <<EOF
+$(trust_codex_files)
+EOF
 }
 
 # ── Gemini / Qwen: trustedFolders.json {"<dir>": "TRUST_FOLDER" | "DO_NOT_TRUST" | ...}

@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # The picker: fzf when installed (and AI_NO_FZF is unset), else a numbered menu.
-# Each row is "<id><TAB><shown text>"; id is c:<claude account> or p:<provider>.
+# Each row is "<id><TAB><shown text>"; id is c:<claude account>, x:<codex account> or p:<provider>.
 
 row_claude() {
   local a=$1 e p5 r5 p7 r7 age
@@ -32,20 +32,46 @@ EOF
   printf 'p:%s\t\033[1;36m%-10s\033[0m %-28.28s %s\n' "$n" "$n" "${l:-$n}" "$usage"
 }
 
-# ai_rows [claude]: every agent, the claude provider expanded into its accounts.
-# With "claude": only the Claude accounts.
+# an extra Codex account (main is the codex provider's own row)
+row_codex() {
+  local a=$1 l w1 p1 r1 w2 p2 r2
+  IFS='|' read -r w1 p1 r1 w2 p2 r2 <<EOF
+$(codex_usage "$(cdx_dir "$a")")
+EOF
+  if cdx_logged_in "$a"; then
+    l=$(printf '%-28.28s' "Codex ($a)")
+  else
+    l=$(printf '\033[31m%-28s\033[0m' 'not logged in')
+  fi
+  printf 'x:%s\t\033[1;36m%-10s\033[0m %s %s  %s\n' "$a" "$a" "$l" \
+    "$(bar "${w1:-5h}" "$p1" "$r1")" "$(bar "${w2:-7d}" "$p2" "$r2")"
+}
+codex_rows() {
+  local a
+  prov_has codex && row_prov codex
+  for a in $(cdx_list); do [ "$a" = main ] || row_codex "$a"; done
+}
+
+# ai_rows [claude|codex]: every agent, the claude and codex providers expanded into their
+# accounts. With "claude" or "codex": only that agent's accounts.
 ai_rows() {
   local n a
-  if [ "${1:-}" = claude ]; then
-    for a in $(acct_list); do row_claude "$a"; done
-    return
-  fi
-  for n in $(prov_names); do
-    if [ "$n" = claude ]; then
+  case ${1:-} in
+    claude)
       for a in $(acct_list); do row_claude "$a"; done
-    else
-      row_prov "$n"
-    fi
+      return
+      ;;
+    codex)
+      codex_rows
+      return
+      ;;
+  esac
+  for n in $(prov_names); do
+    case $n in
+      claude) for a in $(acct_list); do row_claude "$a"; done ;;
+      codex) codex_rows ;;
+      *) row_prov "$n" ;;
+    esac
   done
 }
 
@@ -97,11 +123,14 @@ EOF
   printf '%s\n' "${rows[$((ans - 1))]}"
 }
 
-# pick_and_run <all|claude> [args]: pick a row and start it in this folder
+# pick_and_run <all|claude|codex> [args]: pick a row and start it in this folder
 pick_and_run() {
   local mode=$1 id title="AI agents"
   shift
-  [ "$mode" = claude ] && title="Claude accounts"
+  case $mode in
+    claude) title="Claude accounts" ;;
+    codex) title="Codex accounts" ;;
+  esac
   id=$(choose "$title" "$(ai_rows "$mode")") || return 0
   run_id "$id" "$@"
 }
@@ -111,6 +140,7 @@ run_id() {
   shift
   case $id in
     c:*) run_claude "${id#c:}" "$@" ;;
+    x:*) run_codex "${id#x:}" "$@" ;;
     p:*)
       n=${id#p:}
       trust_share "$PWD"

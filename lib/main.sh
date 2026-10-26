@@ -13,6 +13,10 @@ ai_main() {
       shift
       cla_main "$@"
       ;;
+    codex)
+      shift
+      cdx_main "$@"
+      ;;
     help | -h | --help) ai_help ;;
     version | -v | --version) echo "ai-hub $AI_VERSION" ;;
     *) pick_and_run all "$@" ;;
@@ -31,6 +35,7 @@ ai rm   <name>                      remove it from the list
 ai scan                             add known agents installed since (claude codex gemini ...)
 
 cla ...                             several Claude accounts (see: cla help)
+ai codex ...                        several Codex accounts (see: ai codex help)
 
 ai trust [on|off|status]            share folder trust between agents (off by default)
 ai failover [on|off|status]         resume on the next Claude account at a usage limit

@@ -8,7 +8,8 @@ One command for all your AI coding agents. Type `ai` to see every agent and acco
 - **Plan usage at a glance**: 5-hour and weekly limits with reset times. Bars turn yellow at 60% and red at 90%
 - **Several Claude accounts**: add, remove and rename them safely. Removing moves an account to a trash folder, so nothing is really lost
 - **Shared folder trust** (off by default): trust a folder once and no agent asks again
-- **Failover** (off by default): when a Claude account hits its usage limit, continue the same session on the next account
+- **Several Codex accounts**: the same, with `ai codex`
+- **Failover** (off by default): when a Claude account hits its usage limit, continue the same session on the next account, and hand it on to Codex if you add it to the chain
 - **No API calls**: usage data is read from files the agents already write on your machine
 
 Works on macOS, Linux and WSL. Plain bash (runs on the bash 3.2 built into macOS).
@@ -69,7 +70,7 @@ The list lives in `~/.config/ai-hub/providers`, one agent per line. On first run
 ai add codex-work "CODEX_HOME=~/.codex-work codex" "Codex (work)"
 ```
 
-Codex usage bars are read from the `CODEX_HOME` in the command; `~/...` and `$HOME/...` both work.
+Codex usage bars are read from the `CODEX_HOME` in the command; `~/...` and `$HOME/...` both work. For several Codex logins, `ai codex` below is simpler.
 
 ### Several Claude accounts
 
@@ -82,6 +83,21 @@ cla ls             # see which email each account is logged in with
 cla mv work job    # rename
 cla rm job         # move to ~/.claude-accounts/.trash/ (nothing is deleted)
 ```
+
+### Several Codex accounts
+
+```bash
+ai codex add work       # create an account (config.toml, AGENTS.md and prompts are shared with main)
+ai codex work login     # log it in (any args after the name go to codex)
+ai codex work           # start it
+ai codex main           # your normal account (~/.codex)
+ai codex                # pick a Codex account from the list
+ai codex ls             # see which accounts are logged in
+ai codex mv work job    # rename
+ai codex rm job         # move to ~/.codex-accounts/.trash/ (nothing is deleted)
+```
+
+Each account runs with its own `CODEX_HOME` in `~/.codex-accounts/<name>` (set `CDX_ROOT` to use another folder), and shows up in the `ai` picker with its own usage bars. Its login stays in its own folder; ai-hub only checks that the file is there, it never reads it.
 
 ### Shared folder trust
 
@@ -108,15 +124,29 @@ When Claude says you've hit a limit, exit Claude (`/exit` or ctrl-c twice). `ai`
 - **A limited account is skipped until its real reset time**: taken from the error message or from the usage the status line saved (so weekly limits are skipped correctly too). When the reset time is unknown it is skipped for 5 hours (change with `AI_FO_COOLDOWN`, in seconds)
 - **Only a used-up plan counts**: a short rate limit (429) or a full context is not treated as a limit
 
+#### Hand over to Codex
+
+Put a Codex account in the order as `codex:<name>`, usually last, so Codex picks up the work when every Claude account is out:
+
+```bash
+ai failover order work main codex:main
+```
+
+Codex can't open a Claude session, so it starts in the same folder with the conversation so far as its first message: what you and Claude wrote (no tool calls or their output), cut to the last 60 KB (`AI_FO_HANDOFF_MAX`). The first line of that message can be changed with `AI_FO_CODEX_PROMPT`.
+
+- **This sends your conversation to another provider (OpenAI)**, so Codex is never in the chain unless you add it, and you are asked every time (the default is no)
+- **The chain ends at Codex**: Codex has no way to report its own limit, so nothing after it is tried
+- Starting from Codex has no failover; it only works from a Claude session
+
 ## Security
 
 - **Account and agent names are always checked**: only letters, digits, `.` `_` `-`, and never starting with `.`, so a name can never become a path like `..`
 - **Your files are never deleted**: `cla rm` always moves to the trash
 - **Passwords and tokens are left alone**: Keychain is never read and no credential is copied. On macOS you may need to log in once again after `cla mv`, because Claude ties the login to the folder path
 - **Other agents' JSON files are edited carefully**: checked to be valid JSON before and after, the original backed up once as `<file>.ai-hub.bak`, and the new file swapped in with a single rename that keeps the original permissions, so a running agent never reads a half-written file
-- **`cla` works from inside a Claude window** (e.g. `! cla ls`): `main` always means `~/.claude`, never the account that is currently open
+- **`cla` works from inside a Claude window** (e.g. `! cla ls`): `main` always means `~/.claude`, never the account that is currently open. The same goes for `ai codex` and `~/.codex`
 - **Shared trust is off by default**, because trusting a folder lets an agent load that folder's own settings, hooks and MCP servers. A repo trusted once becomes trusted in every agent
-- **Failover only works between your own Claude accounts**: a conversation is never sent to another provider
+- **Failover stays within your own Claude accounts unless you add Codex**: a conversation only goes to another provider (Codex / OpenAI) when you put a `codex:` account in the order yourself and answer `y` at that moment
 - **Accounts made with `cla add` share settings**, including the hooks and plugins set in `~/.claude/settings.json`. If those settings contain `env` (e.g. `ANTHROPIC_API_KEY`) or `apiKeyHelper`, every account uses the same value. If you don't want that, remove the `settings.json` link in that account's folder and create its own file
 - **Failover always asks before moving a session, and the default is no**: pressing Enter does nothing, only `y` moves it, so a conversation never slips from a work account to a personal one by accident
 - **An account removed with `cla rm` keeps its login in `~/.claude-accounts/.trash/`** (on Linux that is `.credentials.json`). To really remove it, delete that folder yourself

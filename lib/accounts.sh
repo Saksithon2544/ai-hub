@@ -24,15 +24,8 @@ acct_exists() {
 }
 # main first, then the other accounts by name
 acct_list() {
-  local d
   echo main
-  [ -d "$CLA_ROOT" ] || return 0
-  for d in "$CLA_ROOT"/*/; do
-    [ -d "$d" ] || continue
-    d=${d%/}
-    d=${d##*/}
-    valid_name "$d" && [ ! -L "$CLA_ROOT/$d" ] && echo "$d"
-  done
+  sub_accounts "$CLA_ROOT"
 }
 acct_email() {
   has jq && jq -r '.oauthAccount.emailAddress // empty' "$(acct_json "$1")" 2>/dev/null

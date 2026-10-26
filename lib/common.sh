@@ -11,6 +11,10 @@ CLA_ROOT=${CLA_ROOT:-$HOME/.claude-accounts}
 # $CLA_ROOT means ai runs inside a `cla <account>` session (e.g. `! cla ls`): that is not main.
 AI_MAIN_CFG=${CLAUDE_CONFIG_DIR:-}
 case ${AI_MAIN_CFG%/} in "${CLA_ROOT%/}"/*) AI_MAIN_CFG= ;; esac
+# The same for Codex: its accounts live in $CDX_ROOT, "main" is ~/.codex (or $CODEX_HOME).
+CDX_ROOT=${CDX_ROOT:-$HOME/.codex-accounts}
+AI_CODEX_MAIN=${CODEX_HOME:-$HOME/.codex}
+case ${AI_CODEX_MAIN%/} in "${CDX_ROOT%/}"/*) AI_CODEX_MAIN=$HOME/.codex ;; esac
 TAB=$(printf '\t')
 
 has() { command -v "$1" >/dev/null 2>&1; }
@@ -37,6 +41,18 @@ valid_name() {
 }
 need_name() {
   valid_name "$1" || die "invalid name '$1': use letters, digits, . _ - (not starting with .)"
+}
+
+# sub_accounts <root>: the account folders in <root> by name (safe names, real folders, no links)
+sub_accounts() {
+  local d
+  [ -d "$1" ] || return 0
+  for d in "$1"/*/; do
+    [ -d "$d" ] || continue
+    d=${d%/}
+    d=${d##*/}
+    valid_name "$d" && [ ! -L "$1/$d" ] && echo "$d"
+  done
 }
 
 # Ask y/N. AI_YES=1 answers yes (for scripts and tests).
