@@ -196,10 +196,6 @@ shellcheck --severity=warning bin/ai bin/cla install.sh lib/*.sh scripts/*.sh te
 
 ทดสอบทุกฟีเจอร์ใน HOME ชั่วคราวพร้อม `claude` ปลอม ไม่แตะไฟล์ตั้งค่าจริงของคุณ ทุกครั้งที่ push GitHub Actions จะรันชุดนี้บน Ubuntu และ macOS (รวม bash 3.2) พร้อม shellcheck ให้ (`.github/workflows/test.yml`)
 
-## เครดิต
-
-แนวคิดมาจาก [Ak1Ena/ai-launcher](https://github.com/Ak1Ena/ai-launcher) (MIT) โค้ดใน repo นี้เขียนขึ้นใหม่ทั้งหมด
-
 ## License
 
 MIT

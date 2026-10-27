@@ -196,10 +196,6 @@ shellcheck --severity=warning bin/ai bin/cla install.sh lib/*.sh scripts/*.sh te
 
 Every feature is tested in a throwaway HOME with a fake `claude`; your real config is never touched. On every push, GitHub Actions runs these on Ubuntu and macOS (including bash 3.2) together with shellcheck (`.github/workflows/test.yml`).
 
-## Credits
-
-Inspired by [Ak1Ena/ai-launcher](https://github.com/Ak1Ena/ai-launcher) (MIT). All the code in this repo was written from scratch.
-
 ## License
 
 MIT
