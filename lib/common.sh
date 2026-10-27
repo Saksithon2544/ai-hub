@@ -94,6 +94,29 @@ json_edit() {
   rm -f "$tmp"
 }
 
+# tsv_get <file> <key> <field>: one field of the line whose first field is <key>
+tsv_get() {
+  [ -r "$1" ] && awk -F'\t' -v k="$2" -v f="$3" '$1 == k { print $f; exit }' "$1"
+}
+# tsv_put <file> <key> [field2 field3]: add a line, or replace it in place (keeps line order).
+# No field2 = delete the line.
+tsv_put() {
+  local f=$1 tmp
+  shift
+  if [ ! -e "$f" ]; then mkdir -p "$(dirname "$f")" && : >"$f" || return 1; fi
+  tmp=$(mktemp "$f.XXXXXX") || return 1
+  if K=$1 C=${2:-} L=${3:-} awk -F'\t' -v OFS='\t' '
+      $1 == ENVIRON["K"] { if (ENVIRON["C"] != "") print ENVIRON["K"], ENVIRON["C"], ENVIRON["L"]; done = 1; next }
+      NF { print }
+      END { if (!done && ENVIRON["C"] != "") print ENVIRON["K"], ENVIRON["C"], ENVIRON["L"] }' \
+    "$f" >"$tmp"; then
+    mv "$tmp" "$f"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
 # launch <saved command> [args]: run a saved command like a shell alias, with extra args.
 # On macOS caffeinate keeps the machine awake while the agent runs.
 launch() {

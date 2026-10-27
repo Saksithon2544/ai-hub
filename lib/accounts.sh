@@ -159,6 +159,7 @@ cla_mv() {
   if [ -e "$CLA_ROOT/$b" ] || [ -L "$CLA_ROOT/$b" ]; then die "'$b' already exists"; fi
   mv "$CLA_ROOT/$a" "$CLA_ROOT/$b" || die "could not rename"
   fo_rename "$a" "$b"
+  team_rename "$a" "$b"
   echo "renamed '$a' -> '$b'"
   # Claude on macOS keeps the login in Keychain under a name made from the folder path.
   # We don't copy secrets around, so log in again once.

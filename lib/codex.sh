@@ -143,5 +143,6 @@ cdx_mv() {
   if [ -e "$CDX_ROOT/$b" ] || [ -L "$CDX_ROOT/$b" ]; then die "'$b' already exists"; fi
   mv "$CDX_ROOT/$a" "$CDX_ROOT/$b" || die "could not rename"
   fo_rename "codex:$a" "codex:$b"
+  team_rename "codex:$a" "codex:$b"
   echo "renamed '$a' -> '$b'"
 }
