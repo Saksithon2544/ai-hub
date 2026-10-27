@@ -4,7 +4,7 @@
 ai_main() {
   local sub
   case ${1:-} in
-    ls | add | edit | rm | scan | trust | failover)
+    ls | add | edit | rm | scan | trust | failover | team | delegate)
       sub=$1
       shift
       "ai_$sub" "$@"
@@ -41,6 +41,10 @@ ai trust [on|off|status]            share folder trust between agents (off by de
 ai failover [on|off|status]         resume on the next Claude account at a usage limit
 ai failover order <account>...     set the order (top is tried first)
 ai failover clear [account]         forget a limit
+
+ai team                             start the team lead with a brief of its members (see: ai team help)
+ai team add <member> "<good at>"    add a member: a Claude account, codex:<name>, or an agent from ai ls
+ai delegate <member> "<task>"       run a member on a task in this folder (the lead uses this)
 
 Files: ~/.config/ai-hub (settings)  ~/.local/state/ai-hub (limits)  ~/.claude-accounts (accounts)
 Optional tools: fzf (searchable picker), jq (usage bars, trust, failover)

@@ -44,7 +44,7 @@ prov_names() {
 # prov_get <name> <field: 1 = name, 2 = command, 3 = label>
 prov_get() {
   prov_seed
-  awk -F'\t' -v k="$1" -v f="$2" '$1 == k { print $f; exit }' "$AI_PROVIDERS"
+  tsv_get "$AI_PROVIDERS" "$1" "$2"
 }
 prov_has() { [ -n "$1" ] && [ -n "$(prov_get "$1" 1)" ]; }
 # the CLI a provider runs: first word after any VAR=value, without its folder
@@ -54,19 +54,8 @@ prov_agent() {
 
 # prov_put <name> [command label]: add, or replace in place (keeps line order). No command = delete.
 prov_put() {
-  local tmp
   prov_seed
-  tmp=$(mktemp "$AI_PROVIDERS.XXXXXX") || return 1
-  if K=$1 C=${2:-} L=${3:-} awk -F'\t' -v OFS='\t' '
-      $1 == ENVIRON["K"] { if (ENVIRON["C"] != "") print ENVIRON["K"], ENVIRON["C"], ENVIRON["L"]; done = 1; next }
-      NF { print }
-      END { if (!done && ENVIRON["C"] != "") print ENVIRON["K"], ENVIRON["C"], ENVIRON["L"] }' \
-    "$AI_PROVIDERS" >"$tmp"; then
-    mv "$tmp" "$AI_PROVIDERS"
-  else
-    rm -f "$tmp"
-    return 1
-  fi
+  tsv_put "$AI_PROVIDERS" "$@"
 }
 
 # a field must be one line without tabs (the file is tab separated)

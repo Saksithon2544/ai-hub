@@ -18,10 +18,21 @@ P=$HOME/.config/ai-hub/providers
 # fake claude: logs "<config folder>|<args>"; account "a" ends on a usage limit.
 # Sessions go to projects/<this folder, like Claude names it>; FAKE_OTHER=1 writes the
 # session as if it came from another window in another folder.
+# Headless (-p): answers "claude says: <last arg>"; account "a" prints the limit error and fails.
 cat >"$tmp/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 cfg=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
 printf '%s|%s\n' "$(basename "$cfg")" "$*" >>"$HOME/claude.log"
+case " $* " in *" -p "*)
+  if [ "$(basename "$cfg")" = a ]; then
+    echo "Claude AI usage limit reached|1700000000" >&2
+    exit 1
+  fi
+  for last; do :; done
+  echo "claude says: $last"
+  exit 0
+  ;;
+esac
 if [ "$(basename "$cfg")" = a ]; then
   sleep 1
   p=$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')
@@ -34,10 +45,15 @@ fi
 exit 0
 EOF
 chmod +x "$tmp/bin/claude"
-# fake codex: logs "<CODEX_HOME folder>|<args>" (a handed-over prompt spans several lines)
+# fake codex: logs "<CODEX_HOME folder>|<args>" (a handed-over prompt spans several lines);
+# `codex exec` answers "codex says: <last arg>"
 cat >"$tmp/bin/codex" <<'EOF'
 #!/usr/bin/env bash
 printf '%s|%s\n' "$(basename "${CODEX_HOME:-$HOME/.codex}")" "$*" >>"$HOME/codex.log"
+if [ "${1:-}" = exec ]; then
+  for last; do :; done
+  echo "codex says: $last"
+fi
 exit 0
 EOF
 chmod +x "$tmp/bin/codex"
@@ -145,6 +161,83 @@ check "ai codex mv renames" test -d "$HOME/.codex-accounts/job"
 ai codex rm job >/dev/null 2>&1
 check "ai codex rm moves to the trash" sh -c 'ls "$1/.codex-accounts/.trash" | grep -q "^job-"' _ "$HOME"
 check "ai codex rm removes it from the list" test ! -e "$HOME/.codex-accounts/job"
+
+echo "team"
+T=$HOME/.config/ai-hub/team
+TL=$HOME/.local/state/ai-hub/team/logs
+cla add t1 >/dev/null 2>&1
+ai codex add helper2 >/dev/null 2>&1
+ai add foo2 "echo member:" "Foo 2" >/dev/null 2>&1
+ai add bar2 "bar2 --x" "Bar 2" >/dev/null 2>&1
+check "ai team ls with no team yet" sh -c 'bash "$1/bin/ai" team ls | grep -q "none yet"' _ "$here"
+check "ai team with no team is refused" eval '! ai team'
+check "ai team add refuses an unknown member" eval '! ai team add nope "x"'
+check "ai team add refuses codex:nope" eval '! ai team add codex:nope "x"'
+check "ai team add refuses ../x" eval '! ai team add ../x "x"'
+check "ai team add refuses tabs" eval "! ai team add t1 \"a${TAB}b\""
+check "ai team add needs a command for an unknown agent" eval '! ai team add bar2 "x"'
+ai team add t1 "docs" >/dev/null 2>&1
+ai team add codex:helper2 "tests" >/dev/null 2>&1
+ai team add foo2 "echo" "echo member:" >/dev/null 2>&1
+check "members are saved" grep -q "^codex:helper2${TAB}tests${TAB}\$" "$T"
+check "ai team ls shows them" sh -c 'bash "$1/bin/ai" team ls | grep -q "t1.*docs"' _ "$here"
+check "ai team add again updates in place" sh -c 'bash "$1/bin/ai" team add t1 "docs and more" | grep -q "^updated" && [ "$(grep -c "^t1" "$2")" = 1 ]' _ "$here" "$T"
+check "ai team add codex names the provider" sh -c 'bash "$1/bin/ai" team add codex:helper2 "tests" | grep -q OpenAI' _ "$here"
+check "the lead is main by default" sh -c 'bash "$1/bin/ai" team lead | grep -qx "lead: main"' _ "$here"
+check "ai team lead refuses an agent" eval '! ai team lead foo2'
+ai team lead t1 >/dev/null 2>&1
+check "ai team lead sets the lead" test "$(cat "$HOME/.config/ai-hub/team-lead")" = t1
+: >"$HOME/claude.log"
+(cd "$tmp/work" && ai team --x) >/dev/null 2>&1
+check "ai team starts the lead with the brief" grep -q '^t1|--append-system-prompt You are "t1"' "$HOME/claude.log"
+check "the brief lists the members" grep -q '^- codex:helper2: tests$' "$HOME/claude.log"
+check "the lead gets the extra args" grep -q ' --x$' "$HOME/claude.log"
+: >"$HOME/claude.log"
+check "ai delegate runs a Claude member headless" sh -c 'cd "$2" && bash "$1/bin/ai" delegate t1 "write the docs" 2>/dev/null | grep -qx "claude says: write the docs"' _ "$here" "$tmp/work"
+check "on its account, with -p" grep -qx 't1|-p --permission-mode acceptEdits write the docs' "$HOME/claude.log"
+check "ai delegate runs a Codex member with codex exec" sh -c 'cd "$2" && bash "$1/bin/ai" delegate codex:helper2 "add tests" 2>/dev/null | grep -qx "codex says: add tests" && grep -qx "helper2|exec --sandbox workspace-write --skip-git-repo-check add tests" "$HOME/codex.log"' _ "$here" "$tmp/work"
+check "a member with its own command" sh -c 'cd "$2" && bash "$1/bin/ai" delegate foo2 "hi there" 2>/dev/null | grep -qx "member: hi there"' _ "$here" "$tmp/work"
+check "the task can come from stdin" sh -c 'cd "$2" && printf "from stdin" | bash "$1/bin/ai" delegate foo2 - 2>/dev/null | grep -qx "member: from stdin"' _ "$here" "$tmp/work"
+check "ai delegate refuses a member not in the team" eval '! ai delegate main x'
+check "ai delegate needs a task" sh -c 'cd "$2" && ! bash "$1/bin/ai" delegate foo2 </dev/null' _ "$here" "$tmp/work"
+check "the log keeps the task and the reply" sh -c 'f=$(ls -t "$1"/*foo2* | head -n 1); grep -qx "from stdin" "$f" && grep -qx "member: from stdin" "$f" && grep -q "^# done (exit 0)" "$f"' _ "$TL"
+check "ai team log lists them" sh -c 'bash "$1/bin/ai" team log | grep -q "foo2.*hi there"' _ "$here"
+mkdir -p "$HOME/.claude-accounts/a"
+ai team add a "x" >/dev/null 2>&1
+check "a member at its usage limit fails" sh -c 'cd "$2" && ! bash "$1/bin/ai" delegate a "x" >/dev/null 2>&1' _ "$here" "$tmp/work"
+check "and is marked limited" test -f "$HOME/.local/state/ai-hub/limited/a"
+: >"$HOME/claude.log"
+check "a limited member is refused without running" sh -c 'cd "$2" && ! bash "$1/bin/ai" delegate a "x" >/dev/null 2>&1 && ! grep -q "^a|" "$HOME/claude.log"' _ "$here" "$tmp/work"
+check "ai team ls shows the limit" sh -c 'bash "$1/bin/ai" team ls | grep -q limited' _ "$here"
+ai failover clear a >/dev/null 2>&1
+ai team rm a >/dev/null 2>&1
+check "ai team rm removes it" eval "! grep -q '^a' \"$T\""
+cat >"$tmp/bin/slow" <<'EOF'
+#!/bin/sh
+echo "start $(date +%s)" >>"$HOME/slow.log"
+sleep 2
+echo "end $(date +%s)" >>"$HOME/slow.log"
+EOF
+chmod +x "$tmp/bin/slow"
+ai add slow slow "Slow" >/dev/null 2>&1
+ai team add slow "slow" "slow" >/dev/null 2>&1
+(cd "$tmp/work" && ai delegate -b slow one && ai delegate -b slow two) >/dev/null 2>&1
+i=0
+while [ "$(grep -l '^# done' "$TL"/*slow* 2>/dev/null | wc -l)" -lt 2 ] && [ "$i" -lt 30 ]; do
+  sleep 1
+  i=$((i + 1))
+done
+check "background delegations finish" test "$(grep -l '^# done' "$TL"/*slow* 2>/dev/null | wc -l)" -eq 2
+check "they run one at a time in a folder" awk 'NR == 2 { e = $2 } NR == 3 { s = $2 } END { exit !(NR == 4 && s >= e) }' "$HOME/slow.log"
+cla mv t1 t2 >/dev/null 2>&1
+check "cla mv renames the member and the lead" sh -c 'grep -q "^t2$(printf "\t")" "$1" && grep -qx t2 "$2"' _ "$T" "$HOME/.config/ai-hub/team-lead"
+ai codex mv helper2 aide2 >/dev/null 2>&1
+check "ai codex mv renames a Codex member" grep -q "^codex:aide2${TAB}" "$T"
+cla rm t2 >/dev/null 2>&1
+ai codex rm aide2 >/dev/null 2>&1
+for n in foo2 bar2 slow; do ai rm "$n" >/dev/null 2>&1; done
+rm -f "$T" "$HOME/.config/ai-hub/team-lead" "$HOME/slow.log"
+rm -rf "$HOME/.local/state/ai-hub/team"
 
 if command -v jq >/dev/null 2>&1; then
   echo "usage"
