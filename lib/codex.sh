@@ -129,6 +129,7 @@ cdx_rm() {
   [ -e "$t" ] && t=$t-$$
   mv "$CDX_ROOT/$n" "$t" || die "could not move $CDX_ROOT/$n"
   echo "moved '$n' to $t"
+  forget_member "codex:$n"
   echo "tip: to also sign it out, move it back and run: ai codex $n logout"
 }
 

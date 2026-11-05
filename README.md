@@ -100,6 +100,8 @@ ai codex rm job         # move to ~/.codex-accounts/.trash/ (nothing is deleted)
 
 Each account runs with its own `CODEX_HOME` in `~/.codex-accounts/<name>` (set `CDX_ROOT` to use another folder), and shows up in the `ai` picker with its own usage bars. Its login stays in its own folder; ai-hub only checks that the file is there, it never reads it.
 
+Removing an account (`cla rm`, `ai codex rm`) or an agent (`ai rm`) also takes it out of every team and the failover order.
+
 ### Shared folder trust
 
 ```bash

@@ -210,6 +210,28 @@ team_rename() {
   return 0
 }
 
+# after `cla rm` / `ai codex rm` / `ai rm`: a name that no longer resolves (an account and an
+# agent can share a name) leaves every team, its own team and the lead. Fails when it was in none.
+team_forget() {
+  local f hit=1
+  team_member_ok "$1" && return 1
+  for f in "$AI_TEAM" "$AI_TEAMS"/*; do
+    [ -f "$f" ] && [ -n "$(tsv_get "$f" "$1" 1)" ] || continue
+    tsv_put "$f" "$1" && hit=0
+    [ "$f" != "$AI_TEAM" ] && [ ! -s "$f" ] && rm -f "$f"
+  done
+  [ -f "$AI_TEAMS/$1" ] && rm -f "$AI_TEAMS/$1" && hit=0
+  [ "$(head -n 1 "$AI_TEAM_LEAD" 2>/dev/null)" = "$1" ] && rm -f "$AI_TEAM_LEAD" && hit=0
+  return "$hit"
+}
+# forget_member <name>: team_forget and fo_forget, saying what was cleaned up
+forget_member() {
+  local what=
+  team_forget "$1" && what="the team"
+  fo_forget "$1" && what="${what:+$what and }the failover order"
+  [ -z "$what" ] || echo "also removed $1 from $what"
+}
+
 team_show() {
   local f l
   echo "lead:    $(team_lead)   $(dim '(start the team here: ai team)')"

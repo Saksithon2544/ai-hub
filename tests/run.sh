@@ -344,6 +344,51 @@ rm -f "$T" "$HOME/.config/ai-hub/team-lead" "$HOME/slow.log"
 rm -rf "$TS"
 rm -rf "$HOME/.local/state/ai-hub/team"
 
+echo "removing cleans up"
+FO=$HOME/.config/ai-hub/failover-order
+cla add w1 >/dev/null 2>&1
+cla add gemini >/dev/null 2>&1
+ai codex add c1 >/dev/null 2>&1
+ai add ag "echo ag:" >/dev/null 2>&1
+ai add gemini "echo gem:" >/dev/null 2>&1 # an agent with the same name as an account
+for m in w1 codex:c1 ag gemini; do ai team add "$m" "x" "echo $m:" >/dev/null 2>&1; done
+ai team add --of ag w1 "x" >/dev/null 2>&1
+ai team add --of ag codex:c1 "x" >/dev/null 2>&1
+ai team add --of w1 ag "x" >/dev/null 2>&1
+ai team add --of codex:c1 ag "x" >/dev/null 2>&1
+ai team lead w1 >/dev/null 2>&1
+printf '%s\n' w1 codex:c1 gemini main >"$FO"
+check "cla rm says what it cleaned up" sh -c 'bash "$1/bin/cla" rm w1 | grep -qx "also removed w1 from the team and the failover order"' _ "$here"
+check "cla rm takes it out of the lead's team" eval "! grep -q '^w1${TAB}' \"$T\""
+check "and out of a sub-team" eval "! grep -q '^w1${TAB}' \"$TS/ag\""
+check "and deletes the team it led" test ! -e "$TS/w1"
+check "and clears it as the lead" test ! -e "$HOME/.config/ai-hub/team-lead"
+check "and takes it out of the failover order" eval "! grep -qx w1 \"$FO\""
+ai team lead codex:c1 >/dev/null 2>&1
+ai codex rm c1 >/dev/null 2>&1
+check "ai codex rm takes codex:<name> out of the lead's team" eval "! grep -q '^codex:c1${TAB}' \"$T\""
+check "and out of a sub-team, deleting it once empty" test ! -e "$TS/ag"
+check "and deletes the team it led" test ! -e "$TS/codex:c1"
+check "and clears it as the lead" test ! -e "$HOME/.config/ai-hub/team-lead"
+check "and takes it out of the failover order" eval "! grep -qx codex:c1 \"$FO\""
+ai team add --of gemini ag "x" >/dev/null 2>&1
+ai rm ag >/dev/null 2>&1
+check "ai rm takes an agent out of the lead's team" eval "! grep -q '^ag${TAB}' \"$T\""
+check "and out of a sub-team" test ! -e "$TS/gemini"
+ai rm gemini >/dev/null 2>&1
+check "ai rm keeps a name that is still a Claude account" grep -q "^gemini${TAB}" "$T"
+check "and in the failover order" grep -qx gemini "$FO"
+ai add gemini "echo gem:" >/dev/null 2>&1
+cla rm gemini >/dev/null 2>&1
+check "cla rm keeps a name that is still an agent" grep -q "^gemini${TAB}" "$T"
+check "but takes it out of the failover order" eval "! grep -qx gemini \"$FO\""
+check "ai rm of the last one by that name takes it out" sh -c 'bash "$1/bin/ai" rm gemini | grep -qx "also removed gemini from the team"' _ "$here"
+check "the team no longer has it" eval "! grep -q '^gemini${TAB}' \"$T\""
+ai add zz "echo zz:" >/dev/null 2>&1
+check "removing what is in no team says nothing more" sh -c '! bash "$1/bin/ai" rm zz | grep -q "also removed"' _ "$here"
+rm -f "$T" "$FO"
+rm -rf "$TS"
+
 if command -v jq >/dev/null 2>&1; then
   echo "usage"
   mkdir -p "$HOME/.claude-accounts/b"
