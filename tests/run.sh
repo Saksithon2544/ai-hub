@@ -189,8 +189,9 @@ ai team lead t1 >/dev/null 2>&1
 check "ai team lead sets the lead" test "$(cat "$HOME/.config/ai-hub/team-lead")" = t1
 : >"$HOME/claude.log"
 (cd "$tmp/work" && ai team --x) >/dev/null 2>&1
-check "ai team starts the lead with the brief" grep -q '^t1|--allowedTools Bash(ai delegate:\*) Bash(ai team wait:\*) Bash(ai team log:\*) --append-system-prompt You are "t1"' "$HOME/claude.log"
+check "ai team starts the lead with the brief" grep -q '^t1|--allowedTools Bash(ai delegate:\*) --allowedTools Bash(ai team wait:\*) --allowedTools Bash(ai team log:\*) --append-system-prompt You are "t1"' "$HOME/claude.log"
 check "the brief lists the members" grep -q '^- codex:helper2: tests$' "$HOME/claude.log"
+check "failover keeps every tool the lead may run" bash -c 'for f in common failover team; do . "$1/lib/$f.sh"; done; fo_keep_args "${TEAM_ALLOW[@]}" --append-system-prompt b "task"; [ "${#FO_ARGS[@]}" = 8 ] && [ "${FO_ARGS[5]}" = "Bash(ai team log:*)" ]' _ "$here"
 check "the lead gets the extra args" grep -q ' --x$' "$HOME/claude.log"
 : >"$HOME/claude.log"
 check "ai delegate runs a Claude member headless" sh -c 'cd "$2" && bash "$1/bin/ai" delegate t1 "write the docs" 2>/dev/null | grep -qx "claude says: write the docs"' _ "$here" "$tmp/work"
@@ -227,6 +228,9 @@ while [ "$(grep -l '^# done' "$TL"/*slow* 2>/dev/null | wc -l)" -lt 2 ] && [ "$i
   sleep 1
   i=$((i + 1))
 done
+mkdir -p "$HOME/.local/state/ai-hub/team/locks/$(cd "$tmp/work" && pwd -P | sed 's/[^A-Za-z0-9@]/-/g')"
+touch -t 202001010000 "$HOME/.local/state/ai-hub/team/locks/$(cd "$tmp/work" && pwd -P | sed 's/[^A-Za-z0-9@]/-/g')"
+check "a lock left without a pid is taken over" sh -c 'cd "$2" && AI_TEAM_WAIT=4 bash "$1/bin/ai" delegate foo2 "x" >/dev/null 2>&1' _ "$here" "$tmp/work"
 check "background delegations finish" test "$(grep -l '^# done' "$TL"/*slow* 2>/dev/null | wc -l)" -eq 2
 check "they run one at a time in a folder" awk 'NR == 2 { e = $2 } NR == 3 { s = $2 } END { exit !(NR == 4 && s >= e) }' "$HOME/slow.log"
 echo "sub-teams"

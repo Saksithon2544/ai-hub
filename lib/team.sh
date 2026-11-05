@@ -29,6 +29,9 @@ AI_TEAM_GEMINI_OPTS=${AI_TEAM_GEMINI_OPTS:---approval-mode auto_edit}
 AI_TEAM_WAIT=${AI_TEAM_WAIT:-3600} # the most a delegation waits for the folder, in seconds
 AI_TEAM_MAX_DEPTH=${AI_TEAM_MAX_DEPTH:-3} # levels of delegation below the lead
 AI_TEAM_WAIT_STEP=${AI_TEAM_WAIT_STEP:-540} # `ai team wait` returns after this long (an agent's shell call times out at 10m)
+# What a lead (and a member that leads a team) may run without asking. One --allowedTools per
+# tool: failover keeps an option with one value, so a list after one --allowedTools would be cut.
+TEAM_ALLOW=(--allowedTools "Bash(ai delegate:*)" --allowedTools "Bash(ai team wait:*)" --allowedTools "Bash(ai team log:*)")
 # Set for a member while it works: AI_TEAM_AS (who it is, so `ai delegate` uses its team)
 # and AI_TEAM_CHAIN (the members from the top down to it, space separated).
 
@@ -374,8 +377,7 @@ EOF
 $TEAM_TASK}"
       ;;
     *)
-      run_claude "$lead" "${pre[@]}" --allowedTools "Bash(ai delegate:*)" "Bash(ai team wait:*)" "Bash(ai team log:*)" \
-        --append-system-prompt "$brief" "$@" ${TEAM_TASK:+"$TEAM_TASK"}
+      run_claude "$lead" "${pre[@]}" "${TEAM_ALLOW[@]}" --append-system-prompt "$brief" "$@" ${TEAM_TASK:+"$TEAM_TASK"}
       ;;
   esac
 }
@@ -390,7 +392,9 @@ team_lock() {
   mkdir -p "$AI_TEAM_DIR/locks" || return 1
   while ! mkdir "$d" 2>/dev/null; do
     pid=$(cat "$d/pid" 2>/dev/null)
-    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then # its owner is gone
+    # its owner is gone, or died before it wrote its pid (that takes a moment, not a minute)
+    if { [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; } ||
+      { [ -z "$pid" ] && [ -n "$(find "$d" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
       rm -rf "$d"
       continue
     fi
@@ -456,7 +460,7 @@ team_work() {
   # a member that leads a team (and is not at the bottom) gets its brief, and may delegate
   if team_leads "$m" && [ "$(AI_TEAM_CHAIN=$chain team_depth)" -lt "$AI_TEAM_MAX_DEPTH" ]; then
     if team_is_claude "$m" && [ -z "$(tsv_get "$(team_mine)" "$m" 3)" ]; then
-      extra=(--allowedTools "Bash(ai delegate:*)" "Bash(ai team wait:*)" "Bash(ai team log:*)" --append-system-prompt "$(team_brief "$m" "${by:-$(team_lead)}")")
+      extra=("${TEAM_ALLOW[@]}" --append-system-prompt "$(team_brief "$m" "${by:-$(team_lead)}")")
     else
       task="$(team_brief "$m" "${by:-$(team_lead)}")
 
