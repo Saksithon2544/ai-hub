@@ -2,7 +2,7 @@
 # Shared helpers: paths, name checks, confirmation, safe JSON edits.
 
 # shellcheck disable=SC2034 # whole file: its variables are used by the other lib files
-AI_VERSION=0.1.0
+AI_VERSION=0.2.0
 AI_CONFIG_DIR=${AI_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ai-hub}
 AI_STATE_DIR=${AI_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ai-hub}
 AI_PROVIDERS=${AI_PROVIDERS:-$AI_CONFIG_DIR/providers}

@@ -94,5 +94,7 @@ ai_rm() {
   local n=${1:-}
   prov_has "$n" || die "no agent '$n'. see: ai ls"
   confirm "remove '$n' from the agent list?" || return 1
-  prov_put "$n" && echo "removed $n (add it back with: ai add $n <command>)"
+  prov_put "$n" || return 1
+  echo "removed $n (add it back with: ai add $n <command>)"
+  forget_member "$n"
 }

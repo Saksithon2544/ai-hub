@@ -149,6 +149,16 @@ fo_rename() {
   return 0
 }
 
+# after `cla rm` / `ai codex rm`: a member that no longer resolves leaves the order, and its
+# limit goes. Fails when it was not in the order.
+fo_forget() {
+  local tmp
+  fo_member_ok "$1" && return 1
+  rm -f "$(fo_mark "$1")"
+  grep -qxF -- "$1" "$AI_FO_ORDER" 2>/dev/null && tmp=$(mktemp "$AI_FO_ORDER.XXXXXX") || return 1
+  awk -v a="$1" '$0 != a' "$AI_FO_ORDER" >"$tmp" && mv "$tmp" "$AI_FO_ORDER"
+}
+
 # next account to try: not tried in this run ($1 = " a b "), not cooling down
 fo_next() {
   local a

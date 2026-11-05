@@ -29,6 +29,10 @@ AI_TEAM_GEMINI_OPTS=${AI_TEAM_GEMINI_OPTS:---approval-mode auto_edit}
 AI_TEAM_WAIT=${AI_TEAM_WAIT:-3600} # the most a delegation waits for the folder, in seconds
 AI_TEAM_MAX_DEPTH=${AI_TEAM_MAX_DEPTH:-3} # levels of delegation below the lead
 AI_TEAM_WAIT_STEP=${AI_TEAM_WAIT_STEP:-540} # `ai team wait` returns after this long (an agent's shell call times out at 10m)
+AI_TEAM_KEEP_DAYS=${AI_TEAM_KEEP_DAYS:-30} # finished delegation logs are deleted after this many days (0 = keep them)
+# What a lead (and a member that leads a team) may run without asking. One --allowedTools per
+# tool: failover keeps an option with one value, so a list after one --allowedTools would be cut.
+TEAM_ALLOW=(--allowedTools "Bash(ai delegate:*)" --allowedTools "Bash(ai team wait:*)" --allowedTools "Bash(ai team log:*)")
 # Set for a member while it works: AI_TEAM_AS (who it is, so `ai delegate` uses its team)
 # and AI_TEAM_CHAIN (the members from the top down to it, space separated).
 
@@ -104,6 +108,7 @@ ai team add --of <leader> <member> ...    give a member a team of its own (and r
 ai team lead <member>                     who leads (default: main). A Claude account, or codex:<name>
 ai team access [add|rm <folder>]          folders outside this one that every member may read and edit
 ai team log [n]                           the last n delegations (default 10)
+ai team log --clean                       delete the logs of finished delegations and the journal now
 ai team wait <log>...                     wait for background delegations and print their replies
 ai team brief                             print the brief the lead gets (to paste into another setup)
 
@@ -115,6 +120,7 @@ The lead does what it is best at and delegates the rest. A member with a team of
 the same with its part, up to AI_TEAM_MAX_DEPTH levels (default 3). Members edit files here
 directly, one at a time per team. Delegating to codex:<name> or another agent sends the task and
 this folder's files to that provider.
+Logs are readable only by you, and kept AI_TEAM_KEEP_DAYS days (default 30, 0 = forever).
 Headless options: AI_TEAM_CLAUDE_OPTS, AI_TEAM_CODEX_OPTS, AI_TEAM_GEMINI_OPTS (see lib/team.sh)
 EOF
 }
@@ -208,6 +214,28 @@ team_rename() {
   [ -f "$AI_TEAMS/$1" ] && [ ! -e "$AI_TEAMS/$2" ] && mv "$AI_TEAMS/$1" "$AI_TEAMS/$2"
   [ "$(head -n 1 "$AI_TEAM_LEAD" 2>/dev/null)" = "$1" ] && echo "$2" >"$AI_TEAM_LEAD"
   return 0
+}
+
+# after `cla rm` / `ai codex rm` / `ai rm`: a name that no longer resolves (an account and an
+# agent can share a name) leaves every team, its own team and the lead. Fails when it was in none.
+team_forget() {
+  local f hit=1
+  team_member_ok "$1" && return 1
+  for f in "$AI_TEAM" "$AI_TEAMS"/*; do
+    [ -f "$f" ] && [ -n "$(tsv_get "$f" "$1" 1)" ] || continue
+    tsv_put "$f" "$1" && hit=0
+    [ "$f" != "$AI_TEAM" ] && [ ! -s "$f" ] && rm -f "$f"
+  done
+  [ -f "$AI_TEAMS/$1" ] && rm -f "$AI_TEAMS/$1" && hit=0
+  [ "$(head -n 1 "$AI_TEAM_LEAD" 2>/dev/null)" = "$1" ] && rm -f "$AI_TEAM_LEAD" && hit=0
+  return "$hit"
+}
+# forget_member <name>: team_forget and fo_forget, saying what was cleaned up
+forget_member() {
+  local what=
+  team_forget "$1" && what="the team"
+  fo_forget "$1" && what="${what:+$what and }the failover order"
+  [ -z "$what" ] || echo "also removed $1 from $what"
 }
 
 team_show() {
@@ -374,8 +402,7 @@ EOF
 $TEAM_TASK}"
       ;;
     *)
-      run_claude "$lead" "${pre[@]}" --allowedTools "Bash(ai delegate:*)" "Bash(ai team wait:*)" "Bash(ai team log:*)" \
-        --append-system-prompt "$brief" "$@" ${TEAM_TASK:+"$TEAM_TASK"}
+      run_claude "$lead" "${pre[@]}" "${TEAM_ALLOW[@]}" --append-system-prompt "$brief" "$@" ${TEAM_TASK:+"$TEAM_TASK"}
       ;;
   esac
 }
@@ -390,8 +417,9 @@ team_lock() {
   mkdir -p "$AI_TEAM_DIR/locks" || return 1
   while ! mkdir "$d" 2>/dev/null; do
     pid=$(cat "$d/pid" 2>/dev/null)
-    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then # its owner is gone
-      rm -rf "$d"
+    # its owner is gone, or died before it wrote its pid (that takes a moment, not minutes)
+    if team_lock_stale "$d" "$pid"; then
+      team_take_stale "$d"
       continue
     fi
     [ "$waited" -eq 0 ] && warn "another member is working in this folder; waiting for it (one at a time, so two agents never edit the same files at once)"
@@ -406,6 +434,28 @@ team_lock() {
   TEAM_LOCK_DIR=$d
   trap 'team_unlock' EXIT
   trap 'team_unlock; exit 130' INT TERM
+}
+# team_lock_stale <lock> <its pid>: a dead owner, or no pid after a minute or two
+team_lock_stale() {
+  if [ -n "$2" ]; then
+    ! kill -0 "$2" 2>/dev/null
+  else
+    [ ! -e "$1/pid" ] && [ -n "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null)" ]
+  fi
+}
+# team_take_stale <lock>: two waiters can find the same stale lock, and the first may already
+# have made a new one in its place. So only the waiter that gets <lock>.takeover (mkdir is
+# atomic) looks again and removes the lock, and only if it is still stale. The takeover holds
+# its waiter's pid like a lock, so it is only dropped when that waiter is gone (not paused).
+team_take_stale() {
+  local g="$1.takeover"
+  if ! mkdir "$g" 2>/dev/null; then
+    team_lock_stale "$g" "$(cat "$g/pid" 2>/dev/null)" && rm -rf "$g"
+    return 0
+  fi
+  echo $$ >"$g/pid"
+  team_lock_stale "$1" "$(cat "$1/pid" 2>/dev/null)" && rm -rf "$1"
+  rm -rf "$g"
 }
 team_unlock() {
   [ -n "${TEAM_LOCK_DIR:-}" ] && rm -rf "$TEAM_LOCK_DIR"
@@ -436,11 +486,12 @@ ai_delegate() {
   if team_is_claude "$m" && left=$(fo_limited "$m"); then
     die "$m is at its usage limit for another $((left / 3600))h$((left % 3600 / 60))m. pick another member (see: ai failover status)"
   fi
-  mkdir -p "$AI_TEAM_DIR/logs" || return 1
+  team_private || return 1
+  team_prune
   log=${AI_TEAM_LOG:-$AI_TEAM_DIR/logs/$(date +%Y%m%d-%H%M%S)-$(echo "$m" | tr : -)-$$.log}
   if [ -n "$bg" ]; then
     # a fresh ai process, so the lock belongs to it and it outlives this shell
-    : >"$log" || return 1
+    (umask 077 && : >"$log") || return 1
     (AI_TEAM_LOG=$log nohup bash "$AI_HOME/bin/ai" delegate "$m" "$task" >/dev/null 2>&1 </dev/null &)
     echo "started $m in the background. its reply goes to $log (wait for it: ai team wait $log)"
     return 0
@@ -456,7 +507,7 @@ team_work() {
   # a member that leads a team (and is not at the bottom) gets its brief, and may delegate
   if team_leads "$m" && [ "$(AI_TEAM_CHAIN=$chain team_depth)" -lt "$AI_TEAM_MAX_DEPTH" ]; then
     if team_is_claude "$m" && [ -z "$(tsv_get "$(team_mine)" "$m" 3)" ]; then
-      extra=(--allowedTools "Bash(ai delegate:*)" "Bash(ai team wait:*)" "Bash(ai team log:*)" --append-system-prompt "$(team_brief "$m" "${by:-$(team_lead)}")")
+      extra=("${TEAM_ALLOW[@]}" --append-system-prompt "$(team_brief "$m" "${by:-$(team_lead)}")")
     else
       task="$(team_brief "$m" "${by:-$(team_lead)}")
 
@@ -465,6 +516,7 @@ $task"
     fi
   fi
   team_lock || return 1
+  (umask 077 && : >>"$log") || return 1 # only here: the member itself runs with your umask
   printf 'ai: %s is working on it in %s  (log: %s)\n' "$m" "$PWD" "$log" >&2
   printf '# %s · %s · %s\n# task:\n%s\n# reply:\n' "$(date '+%Y-%m-%d %H:%M')" "$m" "$PWD" "$task" >"$log"
   start=$(date +%s)
@@ -489,14 +541,68 @@ $task"
   return "$rc"
 }
 
+# Logs hold whole tasks and replies (often code), so the team folder is yours alone:
+# folders 700, files 600. A folder made by an older ai with looser modes is fixed once.
+team_private() {
+  local d=$AI_TEAM_DIR
+  mkdir -p "$AI_STATE_DIR" || return 1
+  (umask 077 && mkdir -p "$d/logs" "$d/locks" && : >>"$d/journal") || return 1
+  # all private already: the three folders, the journal and every log
+  case $(ls -ld "$d" "$d/logs" "$d/locks" | cut -c1-10 | sort -u) in
+    drwx------) [ -z "$(find "$d/journal" "$d/logs" -type f \( -perm -040 -o -perm -020 -o -perm -010 -o -perm -004 -o -perm -002 -o -perm -001 \) 2>/dev/null | head -n 1)" ] && return 0 ;;
+  esac
+  chmod 700 "$d" "$d/logs" "$d/locks" && chmod 600 "$d/journal" &&
+    find "$d/logs" -type f -exec chmod 600 {} +
+}
+
+# team_done <log>: the delegation has ended: its last line is the exact one team_work writes
+# (a task or a reply can hold a line that starts with "# done"), or, when something the
+# member left running wrote after it, the journal already has its line.
+team_done() {
+  [ -f "$1" ] || return 1
+  tail -n 1 "$1" | grep -q '^# done (exit [0-9]*) in [0-9]*m[0-9]*s$' && return 0
+  [ -f "$AI_TEAM_DIR/journal" ] && awk -F'\t' -v l="$1" '$6 == l { f = 1 } END { exit !f }' "$AI_TEAM_DIR/journal"
+}
+
+# team_prune [days]: delete the logs of finished delegations older than that (default
+# AI_TEAM_KEEP_DAYS; 0 keeps them). A log that has not ended (team_done) stays.
+team_prune() {
+  local days=${1-$AI_TEAM_KEEP_DAYS}
+  case $days in '' | *[!0-9]*) warn "AI_TEAM_KEEP_DAYS must be a number of days"; return 0 ;; esac
+  [ "$days" -gt 0 ] || [ $# -gt 0 ] || return 0
+  [ -d "$AI_TEAM_DIR/logs" ] || return 0
+  if [ "$days" -gt 0 ]; then set -- -mtime +"$((days - 1))"; else set --; fi
+  local f
+  find "$AI_TEAM_DIR/logs" -type f -name '*.log' "$@" | while IFS= read -r f; do
+    team_done "$f" && rm -f "$f"
+  done
+  return 0
+}
+
+# ai team log --clean: delete every finished log now and empty the journal
+team_clean() {
+  local n f
+  n=$(find "$AI_TEAM_DIR/logs" -type f -name '*.log' 2>/dev/null | while IFS= read -r f; do team_done "$f" && echo; done | wc -l | tr -d ' ')
+  confirm "delete $n finished delegation logs and the journal (ai team log)?" || return 1
+  # the journal first: a delegation ending meanwhile then keeps its journal line
+  [ -f "$AI_TEAM_DIR/journal" ] && : >"$AI_TEAM_DIR/journal"
+  team_prune 0
+  echo "deleted $n logs and emptied the journal (running delegations keep theirs)"
+}
+
 team_log() {
   local n=${1:-10} t m d rc s l task by
-  case $n in '' | *[!0-9]*) die "usage: ai team log [n]" ;; esac
+  [ "$n" = --clean ] && {
+    team_clean
+    return
+  }
+  case $n in '' | *[!0-9]*) die "usage: ai team log [n | --clean]" ;; esac
   [ -s "$AI_TEAM_DIR/journal" ] || {
     echo "no delegations yet"
     return 0
   }
   tail -n "$n" "$AI_TEAM_DIR/journal" | while IFS="$TAB" read -r t m d rc s l task by; do
+    [ -f "$l" ] || l="$l (deleted)"
     if [ "$rc" = 0 ]; then rc=$(printf '\033[32mok\033[0m'); else rc=$(printf '\033[31mexit %s\033[0m' "$rc"); fi
     printf '%s  \033[1;36m%-14s\033[0m %s  %dm%02ds  %s\n      %s\n' "$t" "$m" "$rc" $((s / 60)) $((s % 60)) "$task" "$(dim "${by:+from $by · }$d · $l")"
   done
@@ -510,7 +616,7 @@ team_wait() {
   for f in "$@"; do [ -f "$f" ] || die "no log $f"; done
   while :; do
     todo=0
-    for f in "$@"; do grep -q '^# done' "$f" || todo=$((todo + 1)); done
+    for f in "$@"; do team_done "$f" || todo=$((todo + 1)); done
     [ "$todo" -eq 0 ] && break
     if [ "$waited" -ge "$AI_TEAM_WAIT_STEP" ]; then
       echo "$todo still working after ${waited}s. run ai team wait again"

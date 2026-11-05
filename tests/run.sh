@@ -189,8 +189,9 @@ ai team lead t1 >/dev/null 2>&1
 check "ai team lead sets the lead" test "$(cat "$HOME/.config/ai-hub/team-lead")" = t1
 : >"$HOME/claude.log"
 (cd "$tmp/work" && ai team --x) >/dev/null 2>&1
-check "ai team starts the lead with the brief" grep -q '^t1|--allowedTools Bash(ai delegate:\*) Bash(ai team wait:\*) Bash(ai team log:\*) --append-system-prompt You are "t1"' "$HOME/claude.log"
+check "ai team starts the lead with the brief" grep -q '^t1|--allowedTools Bash(ai delegate:\*) --allowedTools Bash(ai team wait:\*) --allowedTools Bash(ai team log:\*) --append-system-prompt You are "t1"' "$HOME/claude.log"
 check "the brief lists the members" grep -q '^- codex:helper2: tests$' "$HOME/claude.log"
+check "failover keeps every tool the lead may run" bash -c 'for f in common failover team; do . "$1/lib/$f.sh"; done; fo_keep_args "${TEAM_ALLOW[@]}" --append-system-prompt b "task"; [ "${#FO_ARGS[@]}" = 8 ] && [ "${FO_ARGS[5]}" = "Bash(ai team log:*)" ]' _ "$here"
 check "the lead gets the extra args" grep -q ' --x$' "$HOME/claude.log"
 : >"$HOME/claude.log"
 check "ai delegate runs a Claude member headless" sh -c 'cd "$2" && bash "$1/bin/ai" delegate t1 "write the docs" 2>/dev/null | grep -qx "claude says: write the docs"' _ "$here" "$tmp/work"
@@ -227,8 +228,78 @@ while [ "$(grep -l '^# done' "$TL"/*slow* 2>/dev/null | wc -l)" -lt 2 ] && [ "$i
   sleep 1
   i=$((i + 1))
 done
+mkdir -p "$HOME/.local/state/ai-hub/team/locks/$(cd "$tmp/work" && pwd -P | sed 's/[^A-Za-z0-9@]/-/g')"
+touch -t 202001010000 "$HOME/.local/state/ai-hub/team/locks/$(cd "$tmp/work" && pwd -P | sed 's/[^A-Za-z0-9@]/-/g')"
+check "a lock left without a pid is taken over" sh -c 'cd "$2" && AI_TEAM_WAIT=4 bash "$1/bin/ai" delegate foo2 "x" >/dev/null 2>&1' _ "$here" "$tmp/work"
 check "background delegations finish" test "$(grep -l '^# done' "$TL"/*slow* 2>/dev/null | wc -l)" -eq 2
 check "they run one at a time in a folder" awk 'NR == 2 { e = $2 } NR == 3 { s = $2 } END { exit !(NR == 4 && s >= e) }' "$HOME/slow.log"
+echo "private logs"
+mode() { ls -ld "$1" | cut -c1-10; } # e.g. -rw------- (portable, unlike stat)
+check "a log is only readable by you" test "$(mode "$(ls -t "$TL"/*foo2* | head -n 1)")" = -rw-------
+check "so is the journal" test "$(mode "$TL/../journal")" = -rw-------
+check "the logs folder is yours alone" test "$(mode "$TL")" = drwx------
+check "a background log too" test "$(mode "$(ls -t "$TL"/*slow* | head -n 1)")" = -rw-------
+chmod 755 "$TL"
+chmod 644 "$TL"/*.log
+(cd "$tmp/work" && ai delegate foo2 "fix modes") >/dev/null 2>&1
+check "an older, looser logs folder is tightened" test "$(mode "$TL")" = drwx------
+check "and its old logs" test "$(mode "$(ls -t "$TL"/*slow* | head -n 1)")" = -rw-------
+printf '# old\n# done (exit 0) in 0m01s\n' >"$TL/20200101-000000-old-1.log"
+printf '# old\n# reply:\n' >"$TL/20200101-000000-running-1.log"
+touch -t 202001010000 "$TL/20200101-000000-old-1.log" "$TL/20200101-000000-running-1.log"
+(cd "$tmp/work" && AI_TEAM_KEEP_DAYS=0 ai delegate foo2 "keep") >/dev/null 2>&1
+check "AI_TEAM_KEEP_DAYS=0 keeps old logs" test -f "$TL/20200101-000000-old-1.log"
+(cd "$tmp/work" && ai delegate foo2 "prune") >/dev/null 2>&1
+check "an old finished log is deleted" test ! -e "$TL/20200101-000000-old-1.log"
+check "an old running log is kept" test -f "$TL/20200101-000000-running-1.log"
+check "a new log is kept" sh -c 'grep -l "^prune$" "$1"/*foo2* | grep -q .' _ "$TL"
+check "ai team log --clean deletes finished logs" sh -c 'bash "$1/bin/ai" team log --clean && ! grep -l "^# done" "$2"/*.log' _ "$here" "$TL"
+check "but not running ones" test -f "$TL/20200101-000000-running-1.log"
+check "and empties the journal" test ! -s "$TL/../journal"
+check "ai team log after --clean" sh -c 'bash "$1/bin/ai" team log | grep -q "no delegations"' _ "$here"
+(cd "$tmp/work" && ai delegate foo2 "after") >/dev/null 2>&1
+rm -f "$TL"/*.log
+check "ai team log works when a log is gone" sh -c 'bash "$1/bin/ai" team log | grep -q "(deleted)"' _ "$here"
+echo "review fixes"
+L=$HOME/.local/state/ai-hub/team/logs
+mkdir -p "$L"
+printf '# 2026 · x · /w\n# task:\nfix it\n# done when tests pass\n# reply:\n' >"$L/running.log"
+check "a task line starting with # done is not the end" sh -c 'AI_TEAM_WAIT_STEP=0 bash "$1/bin/ai" team wait "$2"; [ $? = 3 ]' _ "$here" "$L/running.log"
+AI_YES=1 ai team log --clean >/dev/null 2>&1
+check "so --clean keeps that running log" test -f "$L/running.log"
+printf '# done (exit 0) in 0m01s\n' >>"$L/running.log"
+AI_YES=1 ai team log --clean >/dev/null 2>&1
+check "and deletes it once it has ended" test ! -e "$L/running.log"
+(cd "$tmp/work" && ai delegate foo2 "x") >/dev/null 2>&1
+chmod 644 "$HOME/.local/state/ai-hub/team/journal"
+(cd "$tmp/work" && ai delegate foo2 "x") >/dev/null 2>&1
+check "a loose journal is fixed even when the logs folder is private" sh -c 'ls -l "$1" | cut -c1-10 | grep -qx -- "-rw-------"' _ "$HOME/.local/state/ai-hub/team/journal"
+lk=$HOME/.local/state/ai-hub/team/locks/$(cd "$tmp/work" && pwd -P | sed 's/[^A-Za-z0-9@]/-/g')
+mkdir -p "$lk"
+check "a fresh lock without a pid is not taken (its owner is about to write it)" sh -c 'cd "$2" && ! AI_TEAM_WAIT=2 bash "$1/bin/ai" delegate foo2 "x" >/dev/null 2>&1' _ "$here" "$tmp/work"
+check "and is left in place" test -d "$lk"
+rm -rf "$lk"
+check "a takeover leaves a fresh lock alone" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; mkdir -p "$2"; team_take_stale "$2"; [ -d "$2" ] && [ ! -e "$2.takeover" ]' _ "$here" "$lk"
+check "and drops a stale one" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; touch -t 202001010000 "$2"; team_take_stale "$2"; [ ! -e "$2" ] && [ ! -e "$2.takeover" ]' _ "$here" "$lk"
+mkdir -p "$lk" "$lk.takeover"
+(sleep 60 >/dev/null 2>&1 & echo $! >"$lk.takeover/pid") # a waiter that is alive, not a job of this shell
+touch -t 202001010000 "$lk.takeover"
+check "a takeover whose waiter is alive (even if old) is left alone" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; touch -t 202001010000 "$2"; team_take_stale "$2"; [ -d "$2" ] && [ -d "$2.takeover" ]' _ "$here" "$lk"
+kill "$(cat "$lk.takeover/pid")" 2>/dev/null
+rm -f "$lk.takeover/pid"
+check "while another waiter takes it over, the lock stays" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; touch -t 202001010000 "$2"; team_take_stale "$2"; [ -d "$2" ]' _ "$here" "$lk"
+touch -t 202001010000 "$lk.takeover"
+echo 999999 >"$lk.takeover/pid"
+check "a takeover left by a dead waiter is dropped" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; team_take_stale "$2"; [ ! -e "$2.takeover" ]' _ "$here" "$lk"
+rm -rf "$lk" "$lk.takeover"
+(cd "$tmp/work" && ai delegate foo2 "x") >/dev/null 2>&1
+lf=$(ls -t "$L"/*foo2* | head -n 1)
+echo "late stderr" >>"$lf"
+check "a log written to after its end still counts as ended (by the journal)" sh -c 'AI_TEAM_WAIT_STEP=0 bash "$1/bin/ai" team wait "$2"' _ "$here" "$lf"
+chmod 620 "$HOME/.local/state/ai-hub/team/journal"
+(cd "$tmp/work" && ai delegate foo2 "x") >/dev/null 2>&1
+check "a group-writable journal is fixed too" sh -c 'ls -l "$1" | cut -c1-10 | grep -qx -- "-rw-------"' _ "$HOME/.local/state/ai-hub/team/journal"
+
 echo "sub-teams"
 TS=$HOME/.config/ai-hub/teams
 # boss: an agent that leads a team of its own; it hands part of its task to t1
@@ -343,6 +414,51 @@ for n in foo2 bar2 slow boss; do ai rm "$n" >/dev/null 2>&1; done
 rm -f "$T" "$HOME/.config/ai-hub/team-lead" "$HOME/slow.log"
 rm -rf "$TS"
 rm -rf "$HOME/.local/state/ai-hub/team"
+
+echo "removing cleans up"
+FO=$HOME/.config/ai-hub/failover-order
+cla add w1 >/dev/null 2>&1
+cla add gemini >/dev/null 2>&1
+ai codex add c1 >/dev/null 2>&1
+ai add ag "echo ag:" >/dev/null 2>&1
+ai add gemini "echo gem:" >/dev/null 2>&1 # an agent with the same name as an account
+for m in w1 codex:c1 ag gemini; do ai team add "$m" "x" "echo $m:" >/dev/null 2>&1; done
+ai team add --of ag w1 "x" >/dev/null 2>&1
+ai team add --of ag codex:c1 "x" >/dev/null 2>&1
+ai team add --of w1 ag "x" >/dev/null 2>&1
+ai team add --of codex:c1 ag "x" >/dev/null 2>&1
+ai team lead w1 >/dev/null 2>&1
+printf '%s\n' w1 codex:c1 gemini main >"$FO"
+check "cla rm says what it cleaned up" sh -c 'bash "$1/bin/cla" rm w1 | grep -qx "also removed w1 from the team and the failover order"' _ "$here"
+check "cla rm takes it out of the lead's team" eval "! grep -q '^w1${TAB}' \"$T\""
+check "and out of a sub-team" eval "! grep -q '^w1${TAB}' \"$TS/ag\""
+check "and deletes the team it led" test ! -e "$TS/w1"
+check "and clears it as the lead" test ! -e "$HOME/.config/ai-hub/team-lead"
+check "and takes it out of the failover order" eval "! grep -qx w1 \"$FO\""
+ai team lead codex:c1 >/dev/null 2>&1
+ai codex rm c1 >/dev/null 2>&1
+check "ai codex rm takes codex:<name> out of the lead's team" eval "! grep -q '^codex:c1${TAB}' \"$T\""
+check "and out of a sub-team, deleting it once empty" test ! -e "$TS/ag"
+check "and deletes the team it led" test ! -e "$TS/codex:c1"
+check "and clears it as the lead" test ! -e "$HOME/.config/ai-hub/team-lead"
+check "and takes it out of the failover order" eval "! grep -qx codex:c1 \"$FO\""
+ai team add --of gemini ag "x" >/dev/null 2>&1
+ai rm ag >/dev/null 2>&1
+check "ai rm takes an agent out of the lead's team" eval "! grep -q '^ag${TAB}' \"$T\""
+check "and out of a sub-team" test ! -e "$TS/gemini"
+ai rm gemini >/dev/null 2>&1
+check "ai rm keeps a name that is still a Claude account" grep -q "^gemini${TAB}" "$T"
+check "and in the failover order" grep -qx gemini "$FO"
+ai add gemini "echo gem:" >/dev/null 2>&1
+cla rm gemini >/dev/null 2>&1
+check "cla rm keeps a name that is still an agent" grep -q "^gemini${TAB}" "$T"
+check "but takes it out of the failover order" eval "! grep -qx gemini \"$FO\""
+check "ai rm of the last one by that name takes it out" sh -c 'bash "$1/bin/ai" rm gemini | grep -qx "also removed gemini from the team"' _ "$here"
+check "the team no longer has it" eval "! grep -q '^gemini${TAB}' \"$T\""
+ai add zz "echo zz:" >/dev/null 2>&1
+check "removing what is in no team says nothing more" sh -c '! bash "$1/bin/ai" rm zz | grep -q "also removed"' _ "$here"
+rm -f "$T" "$FO"
+rm -rf "$TS"
 
 if command -v jq >/dev/null 2>&1; then
   echo "usage"
