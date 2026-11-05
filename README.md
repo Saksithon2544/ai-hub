@@ -167,7 +167,7 @@ ai team log                                     # what was delegated, and how it
 - **Members edit files directly, one at a time per folder**: a second delegation waits for the first, so two agents never change the same files at once
 - **The lead stays responsible**: the brief tells it to check what comes back (run the tests, read the diff) and fix or re-delegate
 - **A member at its usage limit is refused**, so the lead picks another one. A Claude member that hits its limit while working is marked limited, the same way failover does
-- **Everything is logged**: `ai team log` lists past delegations; the full task and reply of each one is in `~/.local/state/ai-hub/team/logs/`
+- **Everything is logged**: `ai team log` lists past delegations; the full task and reply of each one is in `~/.local/state/ai-hub/team/logs/`, readable only by you. Logs of finished delegations are deleted after 30 days (`AI_TEAM_KEEP_DAYS`, `0` keeps them); `ai team log --clean` deletes them all now
 - `ai delegate -b <member> "<task>"` runs in the background (the log file ends with `# done` when it has finished). `ai delegate <member> -` reads a long task from stdin. `ai team brief` prints the brief, to paste into another setup
 - Members use their own plan limits, so the team also spreads your usage across accounts
 
@@ -222,6 +222,7 @@ How a member runs headless, added after its saved command: Claude `-p --permissi
 - **Accounts made with `cla add` share settings**, including the hooks and plugins set in `~/.claude/settings.json`. If those settings contain `env` (e.g. `ANTHROPIC_API_KEY`) or `apiKeyHelper`, every account uses the same value. If you don't want that, remove the `settings.json` link in that account's folder and create its own file
 - **The team lead runs `ai delegate` without asking**, and team members may use the folders in `ai team access`, which they can also change. Keep that list short
 - **A team member only gets work after you added it**: the lead already has a shell, so `ai delegate` gives it nothing it could not do by running `codex` itself; it makes the hand-over explicit, logged, and limited to the members you chose
+- **Delegation logs are private**: they hold whole tasks and replies (often code), so the team folder is readable only by you (folders `700`, files `600`, older ones are tightened on the next delegation). They are deleted after 30 days (`AI_TEAM_KEEP_DAYS`), or now with `ai team log --clean`
 - **Failover always asks before moving a session, and the default is no**: pressing Enter does nothing, only `y` moves it, so a conversation never slips from a work account to a personal one by accident
 - **An account removed with `cla rm` keeps its login in `~/.claude-accounts/.trash/`** (on Linux that is `.credentials.json`). To really remove it, delete that folder yourself
 

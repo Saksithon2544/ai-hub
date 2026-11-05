@@ -29,6 +29,7 @@ AI_TEAM_GEMINI_OPTS=${AI_TEAM_GEMINI_OPTS:---approval-mode auto_edit}
 AI_TEAM_WAIT=${AI_TEAM_WAIT:-3600} # the most a delegation waits for the folder, in seconds
 AI_TEAM_MAX_DEPTH=${AI_TEAM_MAX_DEPTH:-3} # levels of delegation below the lead
 AI_TEAM_WAIT_STEP=${AI_TEAM_WAIT_STEP:-540} # `ai team wait` returns after this long (an agent's shell call times out at 10m)
+AI_TEAM_KEEP_DAYS=${AI_TEAM_KEEP_DAYS:-30} # finished delegation logs are deleted after this many days (0 = keep them)
 # Set for a member while it works: AI_TEAM_AS (who it is, so `ai delegate` uses its team)
 # and AI_TEAM_CHAIN (the members from the top down to it, space separated).
 
@@ -104,6 +105,7 @@ ai team add --of <leader> <member> ...    give a member a team of its own (and r
 ai team lead <member>                     who leads (default: main). A Claude account, or codex:<name>
 ai team access [add|rm <folder>]          folders outside this one that every member may read and edit
 ai team log [n]                           the last n delegations (default 10)
+ai team log --clean                       delete the logs of finished delegations and the journal now
 ai team wait <log>...                     wait for background delegations and print their replies
 ai team brief                             print the brief the lead gets (to paste into another setup)
 
@@ -115,6 +117,7 @@ The lead does what it is best at and delegates the rest. A member with a team of
 the same with its part, up to AI_TEAM_MAX_DEPTH levels (default 3). Members edit files here
 directly, one at a time per team. Delegating to codex:<name> or another agent sends the task and
 this folder's files to that provider.
+Logs are readable only by you, and kept AI_TEAM_KEEP_DAYS days (default 30, 0 = forever).
 Headless options: AI_TEAM_CLAUDE_OPTS, AI_TEAM_CODEX_OPTS, AI_TEAM_GEMINI_OPTS (see lib/team.sh)
 EOF
 }
@@ -436,11 +439,12 @@ ai_delegate() {
   if team_is_claude "$m" && left=$(fo_limited "$m"); then
     die "$m is at its usage limit for another $((left / 3600))h$((left % 3600 / 60))m. pick another member (see: ai failover status)"
   fi
-  mkdir -p "$AI_TEAM_DIR/logs" || return 1
+  team_private || return 1
+  team_prune
   log=${AI_TEAM_LOG:-$AI_TEAM_DIR/logs/$(date +%Y%m%d-%H%M%S)-$(echo "$m" | tr : -)-$$.log}
   if [ -n "$bg" ]; then
     # a fresh ai process, so the lock belongs to it and it outlives this shell
-    : >"$log" || return 1
+    (umask 077 && : >"$log") || return 1
     (AI_TEAM_LOG=$log nohup bash "$AI_HOME/bin/ai" delegate "$m" "$task" >/dev/null 2>&1 </dev/null &)
     echo "started $m in the background. its reply goes to $log (wait for it: ai team wait $log)"
     return 0
@@ -465,6 +469,7 @@ $task"
     fi
   fi
   team_lock || return 1
+  (umask 077 && : >>"$log") || return 1 # only here: the member itself runs with your umask
   printf 'ai: %s is working on it in %s  (log: %s)\n' "$m" "$PWD" "$log" >&2
   printf '# %s · %s · %s\n# task:\n%s\n# reply:\n' "$(date '+%Y-%m-%d %H:%M')" "$m" "$PWD" "$task" >"$log"
   start=$(date +%s)
@@ -489,14 +494,51 @@ $task"
   return "$rc"
 }
 
+# Logs hold whole tasks and replies (often code), so the team folder is yours alone:
+# folders 700, files 600. A folder made by an older ai with looser modes is fixed once.
+team_private() {
+  local d=$AI_TEAM_DIR
+  mkdir -p "$AI_STATE_DIR" || return 1
+  (umask 077 && mkdir -p "$d/logs" "$d/locks" && : >>"$d/journal") || return 1
+  case $(ls -ld "$d/logs") in drwx------*) return 0 ;; esac
+  chmod 700 "$d" "$d/logs" "$d/locks" && chmod 600 "$d/journal" &&
+    find "$d/logs" -type f -exec chmod 600 {} +
+}
+
+# team_prune [days]: delete the logs of finished delegations older than that (default
+# AI_TEAM_KEEP_DAYS; 0 keeps them). A log without "# done" is still running and stays.
+team_prune() {
+  local days=${1-$AI_TEAM_KEEP_DAYS}
+  case $days in '' | *[!0-9]*) warn "AI_TEAM_KEEP_DAYS must be a number of days"; return 0 ;; esac
+  [ "$days" -gt 0 ] || [ $# -gt 0 ] || return 0
+  [ -d "$AI_TEAM_DIR/logs" ] || return 0
+  if [ "$days" -gt 0 ]; then set -- -mtime +"$((days - 1))"; else set --; fi
+  find "$AI_TEAM_DIR/logs" -type f -name '*.log' "$@" -exec grep -q '^# done' {} \; -exec rm -f {} \;
+}
+
+# ai team log --clean: delete every finished log now and empty the journal
+team_clean() {
+  local n
+  n=$(find "$AI_TEAM_DIR/logs" -type f -name '*.log' -exec grep -l '^# done' {} + 2>/dev/null | wc -l | tr -d ' ')
+  confirm "delete $n finished delegation logs and the journal (ai team log)?" || return 1
+  team_prune 0
+  [ -f "$AI_TEAM_DIR/journal" ] && : >"$AI_TEAM_DIR/journal"
+  echo "deleted $n logs and emptied the journal (running delegations keep theirs)"
+}
+
 team_log() {
   local n=${1:-10} t m d rc s l task by
-  case $n in '' | *[!0-9]*) die "usage: ai team log [n]" ;; esac
+  [ "$n" = --clean ] && {
+    team_clean
+    return
+  }
+  case $n in '' | *[!0-9]*) die "usage: ai team log [n | --clean]" ;; esac
   [ -s "$AI_TEAM_DIR/journal" ] || {
     echo "no delegations yet"
     return 0
   }
   tail -n "$n" "$AI_TEAM_DIR/journal" | while IFS="$TAB" read -r t m d rc s l task by; do
+    [ -f "$l" ] || l="$l (deleted)"
     if [ "$rc" = 0 ]; then rc=$(printf '\033[32mok\033[0m'); else rc=$(printf '\033[31mexit %s\033[0m' "$rc"); fi
     printf '%s  \033[1;36m%-14s\033[0m %s  %dm%02ds  %s\n      %s\n' "$t" "$m" "$rc" $((s / 60)) $((s % 60)) "$task" "$(dim "${by:+from $by · }$d · $l")"
   done
