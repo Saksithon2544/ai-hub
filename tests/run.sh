@@ -189,7 +189,7 @@ ai team lead t1 >/dev/null 2>&1
 check "ai team lead sets the lead" test "$(cat "$HOME/.config/ai-hub/team-lead")" = t1
 : >"$HOME/claude.log"
 (cd "$tmp/work" && ai team --x) >/dev/null 2>&1
-check "ai team starts the lead with the brief" grep -q '^t1|--append-system-prompt You are "t1"' "$HOME/claude.log"
+check "ai team starts the lead with the brief" grep -q '^t1|--allowedTools Bash(ai delegate:\*) Bash(ai team wait:\*) Bash(ai team log:\*) --append-system-prompt You are "t1"' "$HOME/claude.log"
 check "the brief lists the members" grep -q '^- codex:helper2: tests$' "$HOME/claude.log"
 check "the lead gets the extra args" grep -q ' --x$' "$HOME/claude.log"
 : >"$HOME/claude.log"
@@ -274,6 +274,63 @@ check "ai team wait prints a background reply" sh -c 'bash "$1/bin/ai" team wait
 echo "# reply:" >"$tmp/running.log"
 check "ai team wait gives up with exit 3" sh -c 'AI_TEAM_WAIT_STEP=0 bash "$1/bin/ai" team wait "$2"; [ $? = 3 ]' _ "$here" "$tmp/running.log"
 ai team add --of t1 foo2 "echo" "echo member:" >/dev/null 2>&1
+echo "team access and ai do"
+mkdir -p "$tmp/specs dir" "$tmp/notes"
+rtmp=$(cd "$tmp" && pwd -P) # the real path (on macOS /var is /private/var)
+check "ai team access with none" sh -c 'bash "$1/bin/ai" team access | grep -q "no extra folders"' _ "$here"
+check "ai team access add refuses a missing folder" eval '! ai team access add "$tmp/nope"'
+check "ai team access add refuses HOME" eval '! ai team access add "~"'
+check "ai team access add refuses /" eval '! ai team access add /'
+ai team access add "$tmp/specs dir" >/dev/null 2>&1
+ai team access add "$tmp/notes" >/dev/null 2>&1
+ai team access add "$tmp/notes" >/dev/null 2>&1
+check "folders are saved once each" test "$(wc -l <"$HOME/.config/ai-hub/team-access")" -eq 2
+: >"$HOME/claude.log"
+(cd "$tmp/work" && ai delegate foo2 "x" && ai delegate t1 "read the specs") >/dev/null 2>&1
+check "a Claude member gets the folders, even with a space" grep -qF "t1|--add-dir $rtmp/specs dir $rtmp/notes -p --permission-mode acceptEdits" "$HOME/claude.log"
+: >"$HOME/codex.log"
+(cd "$tmp/work" && ai delegate codex:helper2 "y") >/dev/null 2>&1
+check "a Codex member gets --add-dir for each" grep -qF "helper2|exec --add-dir $rtmp/specs dir --add-dir $rtmp/notes --sandbox" "$HOME/codex.log"
+: >"$HOME/claude.log"
+(cd "$tmp/work" && ai "do" "build the thing") >/dev/null 2>&1
+check "ai do starts the lead with the folders and the task" sh -c 'grep -qF "t1|--add-dir $1/specs dir --add-dir $1/notes --allowedTools" "$2" && grep -q "build the thing\$" "$2"' _ "$rtmp" "$HOME/claude.log"
+ai team access rm "$tmp/notes" >/dev/null 2>&1
+check "ai team access rm" sh -c '! grep -q notes "$1" && grep -q "specs dir" "$1"' _ "$HOME/.config/ai-hub/team-access"
+rm -f "$HOME/.config/ai-hub/team-access"
+
+echo "team setup"
+cp "$T" "$tmp/team.keep"
+cp "$HOME/.config/ai-hub/team-lead" "$tmp/lead.keep"
+# answers (the first run below already put the old team aside): lead 1 (main), two members with a role from the list and one in
+# your own words, no team of their own, one folder, then no task
+ans() { bash "$here/bin/ai" team setup 2>&1 <<EOF
+1
+$1
+2
+my own words
+
+$tmp/notes
+
+
+EOF
+}
+list=$(cd "$tmp/work" && printf 'n\n1\n\n' | bash "$here/bin/ai" team setup 2>&1)
+num() { printf '%s\n' "$list" | sed -n '/^2)/,$p' | grep -E "^ +[0-9]+\) $1 " | head -n 1 | sed 's/^ *\([0-9]*\)).*/\1/'; }
+n_t1=$(num t1)
+n_cx=$(num codex:helper2)
+check "setup lists the accounts and agents" test -n "$n_t1" -a -n "$n_cx"
+check "setup leaves out agents it can't run headless" sh -c '! printf "%s" "$1" | grep -q " foo2 "' _ "$list"
+check "setup keeps the old team as .bak" test -s "$T.bak"
+out=$(cd "$tmp/work" && ans "$n_t1 $n_cx")
+check "setup sets the lead" grep -qx main "$HOME/.config/ai-hub/team-lead"
+check "setup adds the members with a role from the list" grep -q "^t1${TAB}writing and running tests${TAB}" "$T"
+check "or in your own words" grep -q "^codex:helper2${TAB}my own words${TAB}" "$T"
+check "setup saves the folders" grep -qx "$rtmp/notes" "$HOME/.config/ai-hub/team-access"
+check "setup ends with how to use it" sh -c 'printf "%s" "$1" | grep -q "ai do"' _ "$out"
+rm -f "$HOME/.config/ai-hub/team-access" "$T.bak"
+cp "$tmp/team.keep" "$T"
+rm -rf "$TS" && mv "$TS.bak" "$TS"
+cp "$tmp/lead.keep" "$HOME/.config/ai-hub/team-lead"
 cla mv t1 t2 >/dev/null 2>&1
 check "cla mv renames the member and the lead" sh -c 'grep -q "^t2$(printf "\t")" "$1" && grep -qx t2 "$2"' _ "$T" "$HOME/.config/ai-hub/team-lead"
 check "cla mv renames a member in a sub-team" grep -q "^t2${TAB}" "$TS/boss"

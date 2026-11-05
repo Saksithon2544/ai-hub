@@ -10,7 +10,7 @@ One command for all your AI coding agents. Type `ai` to see every agent and acco
 - **Shared folder trust** (off by default): trust a folder once and no agent asks again
 - **Several Codex accounts**: the same, with `ai codex`
 - **Failover** (off by default): when a Claude account hits its usage limit, continue the same session on the next account, and hand it on to Codex if you add it to the chain
-- **A team of agents** (off by default): a lead you talk to does what it is best at and hands the rest to other agents and accounts with `ai delegate`, then checks what they did. Any member can lead a team of its own
+- **A team of agents** (off by default): a lead you talk to does what it is best at and hands the rest to other agents and accounts with `ai delegate`, then checks what they did. Any member can lead a team of its own. Set it up by answering a few questions (`ai team setup`), then just say what you want: `ai do "..."`
 - **No API calls**: usage data is read from files the agents already write on your machine
 
 Works on macOS, Linux and WSL. Plain bash (runs on the bash 3.2 built into macOS).
@@ -141,6 +141,17 @@ Codex can't open a Claude session, so it starts in the same folder with the conv
 
 ### A team of agents
 
+**The easy way**: answer a few questions once, then give the team work in plain words. No other commands to remember:
+
+```bash
+ai team setup                      # pick the lead, the members, what each is good at, and extra folders
+ai do "add a dark mode and tests for it"   # in your project folder: the lead plans it and hands parts to the team
+```
+
+`ai team setup` shows numbered lists of your accounts and agents, so you only type numbers (Enter takes the answer in brackets). Run it again any time to add to the team or start a new one (the old one is kept as `.bak`). `ai do` with no team yet starts the setup first; `ai do` with no task asks for one. The lead is allowed to run `ai delegate`, `ai team wait` and `ai team log` without asking you each time, so the team works on its own while you watch.
+
+The commands below are what setup does for you, for when you want to change one thing.
+
 ```bash
 ai team add codex:main "large refactors, writing tests"
 ai team add work2 "docs and small fixes"        # a second Claude account
@@ -159,6 +170,18 @@ ai team log                                     # what was delegated, and how it
 - **Everything is logged**: `ai team log` lists past delegations; the full task and reply of each one is in `~/.local/state/ai-hub/team/logs/`
 - `ai delegate -b <member> "<task>"` runs in the background (the log file ends with `# done` when it has finished). `ai delegate <member> -` reads a long task from stdin. `ai team brief` prints the brief, to paste into another setup
 - Members use their own plan limits, so the team also spreads your usage across accounts
+
+#### Folders outside the project
+
+By default the team works only in the folder you start it in. To let every member (and the lead) also use other folders, e.g. specs or data next to the project:
+
+```bash
+ai team access add ~/Documents/specs
+ai team access                     # the list
+ai team access rm ~/Documents/specs
+```
+
+They are passed as `--add-dir` to Claude and Codex and `--include-directories` to Gemini and Qwen. A member with its own command (`ai team add <m> "..." "<command>"`) gets nothing added. **A folder in this list can be read and changed by every member**, and by the provider each member sends its work to: none of these CLIs has a read-only option. `/` and your home folder are refused; add only what the team needs.
 
 #### Teams inside the team
 
@@ -197,6 +220,7 @@ How a member runs headless, added after its saved command: Claude `-p --permissi
 - **Shared trust is off by default**, because trusting a folder lets an agent load that folder's own settings, hooks and MCP servers. A repo trusted once becomes trusted in every agent
 - **Failover stays within your own Claude accounts unless you add Codex**: a conversation only goes to another provider (Codex / OpenAI) when you put a `codex:` account in the order yourself and answer `y` at that moment
 - **Accounts made with `cla add` share settings**, including the hooks and plugins set in `~/.claude/settings.json`. If those settings contain `env` (e.g. `ANTHROPIC_API_KEY`) or `apiKeyHelper`, every account uses the same value. If you don't want that, remove the `settings.json` link in that account's folder and create its own file
+- **The team lead runs `ai delegate` without asking**, and team members may use the folders in `ai team access`, which they can also change. Keep that list short
 - **A team member only gets work after you added it**: the lead already has a shell, so `ai delegate` gives it nothing it could not do by running `codex` itself; it makes the hand-over explicit, logged, and limited to the members you chose
 - **Failover always asks before moving a session, and the default is no**: pressing Enter does nothing, only `y` moves it, so a conversation never slips from a work account to a personal one by accident
 - **An account removed with `cla rm` keeps its login in `~/.claude-accounts/.trash/`** (on Linux that is `.credentials.json`). To really remove it, delete that folder yourself
