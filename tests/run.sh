@@ -233,6 +233,33 @@ touch -t 202001010000 "$HOME/.local/state/ai-hub/team/locks/$(cd "$tmp/work" && 
 check "a lock left without a pid is taken over" sh -c 'cd "$2" && AI_TEAM_WAIT=4 bash "$1/bin/ai" delegate foo2 "x" >/dev/null 2>&1' _ "$here" "$tmp/work"
 check "background delegations finish" test "$(grep -l '^# done' "$TL"/*slow* 2>/dev/null | wc -l)" -eq 2
 check "they run one at a time in a folder" awk 'NR == 2 { e = $2 } NR == 3 { s = $2 } END { exit !(NR == 4 && s >= e) }' "$HOME/slow.log"
+echo "private logs"
+mode() { ls -ld "$1" | cut -c1-10; } # e.g. -rw------- (portable, unlike stat)
+check "a log is only readable by you" test "$(mode "$(ls -t "$TL"/*foo2* | head -n 1)")" = -rw-------
+check "so is the journal" test "$(mode "$TL/../journal")" = -rw-------
+check "the logs folder is yours alone" test "$(mode "$TL")" = drwx------
+check "a background log too" test "$(mode "$(ls -t "$TL"/*slow* | head -n 1)")" = -rw-------
+chmod 755 "$TL"
+chmod 644 "$TL"/*.log
+(cd "$tmp/work" && ai delegate foo2 "fix modes") >/dev/null 2>&1
+check "an older, looser logs folder is tightened" test "$(mode "$TL")" = drwx------
+check "and its old logs" test "$(mode "$(ls -t "$TL"/*slow* | head -n 1)")" = -rw-------
+printf '# old\n# done (exit 0)\n' >"$TL/20200101-000000-old-1.log"
+printf '# old\n# reply:\n' >"$TL/20200101-000000-running-1.log"
+touch -t 202001010000 "$TL/20200101-000000-old-1.log" "$TL/20200101-000000-running-1.log"
+(cd "$tmp/work" && AI_TEAM_KEEP_DAYS=0 ai delegate foo2 "keep") >/dev/null 2>&1
+check "AI_TEAM_KEEP_DAYS=0 keeps old logs" test -f "$TL/20200101-000000-old-1.log"
+(cd "$tmp/work" && ai delegate foo2 "prune") >/dev/null 2>&1
+check "an old finished log is deleted" test ! -e "$TL/20200101-000000-old-1.log"
+check "an old running log is kept" test -f "$TL/20200101-000000-running-1.log"
+check "a new log is kept" sh -c 'grep -l "^prune$" "$1"/*foo2* | grep -q .' _ "$TL"
+check "ai team log --clean deletes finished logs" sh -c 'bash "$1/bin/ai" team log --clean && ! grep -l "^# done" "$2"/*.log' _ "$here" "$TL"
+check "but not running ones" test -f "$TL/20200101-000000-running-1.log"
+check "and empties the journal" test ! -s "$TL/../journal"
+check "ai team log after --clean" sh -c 'bash "$1/bin/ai" team log | grep -q "no delegations"' _ "$here"
+(cd "$tmp/work" && ai delegate foo2 "after") >/dev/null 2>&1
+rm -f "$TL"/*.log
+check "ai team log works when a log is gone" sh -c 'bash "$1/bin/ai" team log | grep -q "(deleted)"' _ "$here"
 echo "sub-teams"
 TS=$HOME/.config/ai-hub/teams
 # boss: an agent that leads a team of its own; it hands part of its task to t1
