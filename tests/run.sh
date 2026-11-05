@@ -279,8 +279,20 @@ mkdir -p "$lk"
 check "a fresh lock without a pid is not taken (its owner is about to write it)" sh -c 'cd "$2" && ! AI_TEAM_WAIT=2 bash "$1/bin/ai" delegate foo2 "x" >/dev/null 2>&1' _ "$here" "$tmp/work"
 check "and is left in place" test -d "$lk"
 rm -rf "$lk"
-check "taking over a stale lock puts a fresh one back" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; mkdir -p "$2"; team_take_stale "$2" "" && [ -d "$2" ] && ! ls -d "$2".stale.* >/dev/null 2>&1' _ "$here" "$lk"
-check "and drops a stale one" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; touch -t 202001010000 "$2"; team_take_stale "$2" "" && [ ! -e "$2" ]' _ "$here" "$lk"
+check "a takeover leaves a fresh lock alone" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; mkdir -p "$2"; team_take_stale "$2"; [ -d "$2" ] && [ ! -e "$2.takeover" ]' _ "$here" "$lk"
+check "and drops a stale one" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; touch -t 202001010000 "$2"; team_take_stale "$2"; [ ! -e "$2" ] && [ ! -e "$2.takeover" ]' _ "$here" "$lk"
+mkdir -p "$lk" "$lk.takeover"
+check "while another waiter takes it over, the lock stays" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; touch -t 202001010000 "$2"; team_take_stale "$2"; [ -d "$2" ]' _ "$here" "$lk"
+touch -t 202001010000 "$lk.takeover"
+check "a takeover left by a dead waiter is dropped" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; team_take_stale "$2"; [ ! -e "$2.takeover" ]' _ "$here" "$lk"
+rm -rf "$lk" "$lk.takeover"
+(cd "$tmp/work" && ai delegate foo2 "x") >/dev/null 2>&1
+lf=$(ls -t "$L"/*foo2* | head -n 1)
+echo "late stderr" >>"$lf"
+check "a log written to after its end still counts as ended (by the journal)" sh -c 'AI_TEAM_WAIT_STEP=0 bash "$1/bin/ai" team wait "$2"' _ "$here" "$lf"
+chmod 620 "$HOME/.local/state/ai-hub/team/journal"
+(cd "$tmp/work" && ai delegate foo2 "x") >/dev/null 2>&1
+check "a group-writable journal is fixed too" sh -c 'ls -l "$1" | cut -c1-10 | grep -qx -- "-rw-------"' _ "$HOME/.local/state/ai-hub/team/journal"
 
 echo "sub-teams"
 TS=$HOME/.config/ai-hub/teams

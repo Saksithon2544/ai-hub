@@ -419,7 +419,7 @@ team_lock() {
     pid=$(cat "$d/pid" 2>/dev/null)
     # its owner is gone, or died before it wrote its pid (that takes a moment, not minutes)
     if team_lock_stale "$d" "$pid"; then
-      team_take_stale "$d" "$pid"
+      team_take_stale "$d"
       continue
     fi
     [ "$waited" -eq 0 ] && warn "another member is working in this folder; waiting for it (one at a time, so two agents never edit the same files at once)"
@@ -443,17 +443,18 @@ team_lock_stale() {
     [ ! -e "$1/pid" ] && [ -n "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null)" ]
   fi
 }
-# team_take_stale <lock> <its pid>: two waiters can find the same stale lock, and the first
-# may already have made a new one in its place. So move it aside (only one mv wins), and
-# drop it only when it is still that stale lock; a fresh one is put back.
+# team_take_stale <lock>: two waiters can find the same stale lock, and the first may already
+# have made a new one in its place. So only the waiter that gets <lock>.takeover (mkdir is
+# atomic) looks again and removes the lock, and only if it is still stale. A takeover left by
+# a waiter that died is dropped after a minute or two.
 team_take_stale() {
-  local t="$1.stale.$$"
-  mv "$1" "$t" 2>/dev/null || return 0
-  if [ "$(cat "$t/pid" 2>/dev/null)" = "$2" ] && team_lock_stale "$t" "$2"; then
-    rm -rf "$t"
-  else
-    mv "$t" "$1" 2>/dev/null || rm -rf "$t"
+  local g="$1.takeover"
+  if ! mkdir "$g" 2>/dev/null; then
+    [ -n "$(find "$g" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$g" 2>/dev/null
+    return 0
   fi
+  team_lock_stale "$1" "$(cat "$1/pid" 2>/dev/null)" && rm -rf "$1"
+  rmdir "$g"
 }
 team_unlock() {
   [ -n "${TEAM_LOCK_DIR:-}" ] && rm -rf "$TEAM_LOCK_DIR"
@@ -547,15 +548,20 @@ team_private() {
   (umask 077 && mkdir -p "$d/logs" "$d/locks" && : >>"$d/journal") || return 1
   # all private already: the three folders, the journal and every log
   case $(ls -ld "$d" "$d/logs" "$d/locks" | cut -c1-10 | sort -u) in
-    drwx------) [ -z "$(find "$d/journal" "$d/logs" -type f \( -perm -040 -o -perm -004 \) 2>/dev/null | head -n 1)" ] && return 0 ;;
+    drwx------) [ -z "$(find "$d/journal" "$d/logs" -type f \( -perm -040 -o -perm -020 -o -perm -010 -o -perm -004 -o -perm -002 -o -perm -001 \) 2>/dev/null | head -n 1)" ] && return 0 ;;
   esac
   chmod 700 "$d" "$d/logs" "$d/locks" && chmod 600 "$d/journal" &&
     find "$d/logs" -type f -exec chmod 600 {} +
 }
 
-# team_done <log>: the delegation has ended. Only its last line counts, in the exact form
-# team_work writes, because a task or a reply can hold a line that starts with "# done".
-team_done() { [ -f "$1" ] && tail -n 1 "$1" | grep -q '^# done (exit [0-9]*) in [0-9]*m[0-9]*s$'; }
+# team_done <log>: the delegation has ended: its last line is the exact one team_work writes
+# (a task or a reply can hold a line that starts with "# done"), or, when something the
+# member left running wrote after it, the journal already has its line.
+team_done() {
+  [ -f "$1" ] || return 1
+  tail -n 1 "$1" | grep -q '^# done (exit [0-9]*) in [0-9]*m[0-9]*s$' && return 0
+  [ -f "$AI_TEAM_DIR/journal" ] && awk -F'\t' -v l="$1" '$6 == l { f = 1 } END { exit !f }' "$AI_TEAM_DIR/journal"
+}
 
 # team_prune [days]: delete the logs of finished delegations older than that (default
 # AI_TEAM_KEEP_DAYS; 0 keeps them). A log that has not ended (team_done) stays.
