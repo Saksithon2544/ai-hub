@@ -85,12 +85,16 @@ ai_team() {
     lead) shift; team_set_lead "$@" ;;
     log) team_log "${2:-}" ;;
     wait) shift; team_wait "$@" ;;
-    *) die "usage: ai team [ls | add | rm | lead | log | wait | brief | help]   (no argument: start the lead)" ;;
+    setup) team_setup ;;
+    access) shift; team_access "$@" ;;
+    *) die "usage: ai team [setup | ls | add | rm | lead | access | log | wait | brief | help]   (no argument: start the lead)" ;;
   esac
 }
 
 team_help() {
   cat <<'EOF'
+ai team setup                             set up the team by answering a few questions (the easy way)
+ai do "<task>"                            start the lead here with a task; it hands parts to the team itself
 ai team                                   start the lead here with a brief of its team (extra args go to the lead)
 ai team ls                                show the lead and the members
 ai team add <member> "<good at>" [cmd]    add a member (or change it): a Claude account, codex:<name>, or an
@@ -98,6 +102,7 @@ ai team add <member> "<good at>" [cmd]    add a member (or change it): a Claude 
 ai team rm <member>                       remove a member
 ai team add --of <leader> <member> ...    give a member a team of its own (and rm --of, brief --of)
 ai team lead <member>                     who leads (default: main). A Claude account, or codex:<name>
+ai team access [add|rm <folder>]          folders outside this one that every member may read and edit
 ai team log [n]                           the last n delegations (default 10)
 ai team wait <log>...                     wait for background delegations and print their replies
 ai team brief                             print the brief the lead gets (to paste into another setup)
@@ -253,14 +258,14 @@ team_show_tree() {
 
 # cmd_insert <saved command> <words>: put words right after the CLI (after any VAR=value)
 cmd_insert() {
-  printf '%s\n' "$1" | awk -v ins="$2" '{
-    for (i = 1; i <= NF; i++) if (!done && $i !~ /^[A-Za-z_][A-Za-z0-9_]*=/) { $i = $i " " ins; done = 1 }
+  printf '%s\n' "$1" | INS=$2 awk '{
+    for (i = 1; i <= NF; i++) if (!done && $i !~ /^[A-Za-z_][A-Za-z0-9_]*=/) { $i = $i " " ENVIRON["INS"]; done = 1 }
     print }'
 }
 
 # the headless command of a member: the one you gave, else by its CLI. The task goes last.
 team_default_cmd() {
-  local m=$1 c agent
+  local m=$1 c agent a
   case $m in
     codex:*)
       c=$(codex_cmd)
@@ -276,10 +281,11 @@ team_default_cmd() {
       fi
       ;;
   esac
+  a=$(team_access_opts "$agent") # the extra folders of `ai team access`
   case $agent in
-    claude) cmd_insert "$c" "-p $AI_TEAM_CLAUDE_OPTS" ;;
-    codex) cmd_insert "$c" "exec $AI_TEAM_CODEX_OPTS" ;;
-    gemini | qwen) cmd_insert "$c" "$AI_TEAM_GEMINI_OPTS -p" ;;
+    claude) cmd_insert "$c" "${a:+$a }-p $AI_TEAM_CLAUDE_OPTS" ;;
+    codex) cmd_insert "$c" "exec ${a:+$a }$AI_TEAM_CODEX_OPTS" ;;
+    gemini | qwen) cmd_insert "$c" "${a:+$a }$AI_TEAM_GEMINI_OPTS -p" ;;
     opencode) cmd_insert "$c" "run" ;;
     *) return 1 ;;
   esac
@@ -347,15 +353,30 @@ team_brief_members() {
   done <"$(team_file "$1")"
 }
 
+# Start the lead with its brief, the extra folders, and leave to run `ai delegate` without
+# asking. TEAM_TASK (from `ai do`) is its first message.
 team_start() {
-  local lead brief
-  [ -s "$AI_TEAM" ] || die "no team yet. add a member first:  ai team add <member> \"<what it is good at>\"   (see: ai team help)"
+  local lead brief d
+  local -a pre=()
+  [ -s "$AI_TEAM" ] || die "no team yet. set one up:  ai team setup"
   lead=$(team_lead)
   brief=$(team_brief '')
+  while IFS= read -r d; do [ -n "$d" ] && pre+=(--add-dir "$d"); done <<EOF
+$(team_access_dirs)
+EOF
+  PATH=$AI_HOME/bin:$PATH
   case $lead in
     # Codex has no system prompt option: the brief is its first message
-    codex:*) run_codex "${lead#codex:}" "$@" "$brief" ;;
-    *) run_claude "$lead" --append-system-prompt "$brief" "$@" ;;
+    codex:*)
+      run_codex "${lead#codex:}" "${pre[@]}" "$@" "$brief${TEAM_TASK:+
+
+# Your task (from the user)
+$TEAM_TASK}"
+      ;;
+    *)
+      run_claude "$lead" "${pre[@]}" --allowedTools "Bash(ai delegate:*)" "Bash(ai team wait:*)" "Bash(ai team log:*)" \
+        --append-system-prompt "$brief" "$@" ${TEAM_TASK:+"$TEAM_TASK"}
+      ;;
   esac
 }
 
