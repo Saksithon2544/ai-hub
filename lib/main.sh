@@ -44,6 +44,7 @@ ai failover clear [account]         forget a limit
 
 ai team                             start the team lead with a brief of its members (see: ai team help)
 ai team add <member> "<good at>"    add a member: a Claude account, codex:<name>, or an agent from ai ls
+ai team add --of <m> <member> ...   give a member a team of its own
 ai delegate <member> "<task>"       run a member on a task in this folder (the lead uses this)
 
 Files: ~/.config/ai-hub (settings)  ~/.local/state/ai-hub (limits)  ~/.claude-accounts (accounts)

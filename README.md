@@ -10,7 +10,7 @@ One command for all your AI coding agents. Type `ai` to see every agent and acco
 - **Shared folder trust** (off by default): trust a folder once and no agent asks again
 - **Several Codex accounts**: the same, with `ai codex`
 - **Failover** (off by default): when a Claude account hits its usage limit, continue the same session on the next account, and hand it on to Codex if you add it to the chain
-- **A team of agents** (off by default): a lead you talk to does what it is best at and hands the rest to other agents and accounts with `ai delegate`, then checks what they did
+- **A team of agents** (off by default): a lead you talk to does what it is best at and hands the rest to other agents and accounts with `ai delegate`, then checks what they did. Any member can lead a team of its own
 - **No API calls**: usage data is read from files the agents already write on your machine
 
 Works on macOS, Linux and WSL. Plain bash (runs on the bash 3.2 built into macOS).
@@ -159,6 +159,28 @@ ai team log                                     # what was delegated, and how it
 - **Everything is logged**: `ai team log` lists past delegations; the full task and reply of each one is in `~/.local/state/ai-hub/team/logs/`
 - `ai delegate -b <member> "<task>"` runs in the background (the log file ends with `# done` when it has finished). `ai delegate <member> -` reads a long task from stdin. `ai team brief` prints the brief, to paste into another setup
 - Members use their own plan limits, so the team also spreads your usage across accounts
+
+#### Teams inside the team
+
+Any member can lead a team of its own. It hands parts of its task to its own members, checks what they did, and reports back to whoever gave it the task:
+
+```bash
+ai team add work "frontend"                               # in the lead's team
+ai team add --of work codex:main "component tests"        # in work's own team
+ai team add --of work gemini "reading the old code"
+ai team ls
+#   work           frontend
+#     └ codex:main   component tests
+#     └ gemini       reading the old code
+```
+
+When `work` is given a task, it also gets a brief of its team, and its `ai delegate` calls go to its own members (a Claude member is allowed to run `ai delegate`, `ai team wait` and `ai team log` for this; other agents get the brief at the top of the task). `ai team rm --of` and `ai team brief --of` work the same way.
+
+- **A task never goes back up**: a member can't delegate to anyone above it in the chain, and it stops after `AI_TEAM_MAX_DEPTH` levels (default 3). At the last level a member gets no team brief and works alone
+- **Each team runs one at a time**: a member's team has its own lock, so it never waits for the lock its leader holds. Its leader shouldn't edit the same files while its members work
+- **Waiting for background work**: `ai team wait <log>...` prints the replies when they are done. It gives up after 9 minutes with exit 3 (`AI_TEAM_WAIT_STEP`), so an agent's shell call doesn't time out; run it again
+- **A Codex member can't lead out of the box**: its `workspace-write` sandbox has no network and can't write ai's logs. `ai team add --of codex:<name>` prints the `AI_TEAM_CODEX_OPTS` that loosen it, if you want that
+- `ai team log` shows who delegated each task (`from work`)
 
 How a member runs headless, added after its saved command: Claude `-p --permission-mode acceptEdits` (`AI_TEAM_CLAUDE_OPTS`), Codex `exec --sandbox workspace-write --skip-git-repo-check` (`AI_TEAM_CODEX_OPTS`), Gemini and Qwen `--approval-mode auto_edit -p` (`AI_TEAM_GEMINI_OPTS`), OpenCode `run`. For any other agent give the command yourself; it gets the task as its last argument: `ai team add kimi "..." "kimi -p"`.
 

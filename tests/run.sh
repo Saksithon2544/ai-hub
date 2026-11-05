@@ -229,14 +229,62 @@ while [ "$(grep -l '^# done' "$TL"/*slow* 2>/dev/null | wc -l)" -lt 2 ] && [ "$i
 done
 check "background delegations finish" test "$(grep -l '^# done' "$TL"/*slow* 2>/dev/null | wc -l)" -eq 2
 check "they run one at a time in a folder" awk 'NR == 2 { e = $2 } NR == 3 { s = $2 } END { exit !(NR == 4 && s >= e) }' "$HOME/slow.log"
+echo "sub-teams"
+TS=$HOME/.config/ai-hub/teams
+# boss: an agent that leads a team of its own; it hands part of its task to t1
+cat >"$tmp/bin/boss" <<'EOF'
+#!/bin/sh
+for last; do :; done
+case $last in *"you lead a team of your own"*) echo "boss got the brief" ;; esac
+echo "boss chain: $AI_TEAM_CHAIN"
+ai delegate t1 "sub job"
+EOF
+chmod +x "$tmp/bin/boss"
+ai add boss boss "Boss" >/dev/null 2>&1
+ai team add boss "leads the docs" "boss" >/dev/null 2>&1
+check "--of refuses an unknown leader" eval '! ai team add --of nope t1 "x"'
+check "--of refuses a member in its own team" eval '! ai team add --of boss boss "x" boss'
+ai team add --of boss t1 "writes pages" >/dev/null 2>&1
+check "ai team add --of saves the member's team" grep -q "^t1${TAB}writes pages${TAB}\$" "$TS/boss"
+check "ai team ls shows it under its leader" sh -c 'bash "$1/bin/ai" team ls | grep -q "└ .*t1.*writes pages"' _ "$here"
+check "the lead's brief says who leads a team" sh -c 'bash "$1/bin/ai" team brief | grep -q "^- boss: leads the docs (leads a team: t1)"' _ "$here"
+check "ai team brief --of shows the member's brief" sh -c 'bash "$1/bin/ai" team brief --of boss | grep -q "^- t1: writes pages"' _ "$here"
+: >"$HOME/claude.log"
+(cd "$tmp/work" && ai delegate boss "write the guide") >"$tmp/boss.out" 2>/dev/null
+check "a member with a team gets its brief with the task" grep -qx "boss got the brief" "$tmp/boss.out"
+check "and knows where it is in the chain" grep -qx "boss chain: boss" "$tmp/boss.out"
+check "and can delegate to its own team" grep -qx "claude says: sub job" "$tmp/boss.out"
+check "the journal says who delegated" sh -c 'bash "$1/bin/ai" team log | grep -q "from boss"' _ "$here"
+check "a member can't delegate outside its team" sh -c 'cd "$2" && ! AI_TEAM_AS=boss AI_TEAM_CHAIN=boss bash "$1/bin/ai" delegate foo2 x' _ "$here" "$tmp/work"
+check "a member without a team can't delegate" sh -c 'cd "$2" && ! AI_TEAM_AS=foo2 AI_TEAM_CHAIN=foo2 bash "$1/bin/ai" delegate t1 x' _ "$here" "$tmp/work"
+check "a task never goes back up the chain" sh -c 'cd "$2" && ! AI_TEAM_AS=boss AI_TEAM_CHAIN="t1 boss" bash "$1/bin/ai" delegate t1 x' _ "$here" "$tmp/work"
+check "delegation stops at AI_TEAM_MAX_DEPTH" sh -c 'cd "$2" && ! AI_TEAM_MAX_DEPTH=1 AI_TEAM_AS=boss AI_TEAM_CHAIN=boss bash "$1/bin/ai" delegate t1 x' _ "$here" "$tmp/work"
+ai team add --of t1 foo2 "echo" "echo member:" >/dev/null 2>&1
+: >"$HOME/claude.log"
+(cd "$tmp/work" && ai delegate t1 "lead it") >/dev/null 2>&1
+check "a Claude member with a team may run ai delegate" grep -q '^t1|-p --permission-mode acceptEdits --allowedTools Bash(ai delegate:\*)' "$HOME/claude.log"
+check "and gets its brief as a system prompt" grep -q -- '--append-system-prompt You are "t1"' "$HOME/claude.log"
+: >"$HOME/claude.log"
+(cd "$tmp/work" && AI_TEAM_MAX_DEPTH=1 ai delegate t1 "alone") >/dev/null 2>&1
+check "at the bottom level a member gets no team brief" sh -c '! grep -q allowedTools "$1"' _ "$HOME/claude.log"
+ai team rm --of t1 foo2 >/dev/null 2>&1
+check "the last ai team rm --of removes the team" test ! -e "$TS/t1"
+l=$(cd "$tmp/work" && ai delegate -b foo2 "later" | sed 's/.* goes to \([^ ]*\) .*/\1/')
+check "ai team wait prints a background reply" sh -c 'bash "$1/bin/ai" team wait "$2" | grep -qx "member: later"' _ "$here" "$l"
+echo "# reply:" >"$tmp/running.log"
+check "ai team wait gives up with exit 3" sh -c 'AI_TEAM_WAIT_STEP=0 bash "$1/bin/ai" team wait "$2"; [ $? = 3 ]' _ "$here" "$tmp/running.log"
+ai team add --of t1 foo2 "echo" "echo member:" >/dev/null 2>&1
 cla mv t1 t2 >/dev/null 2>&1
 check "cla mv renames the member and the lead" sh -c 'grep -q "^t2$(printf "\t")" "$1" && grep -qx t2 "$2"' _ "$T" "$HOME/.config/ai-hub/team-lead"
+check "cla mv renames a member in a sub-team" grep -q "^t2${TAB}" "$TS/boss"
+check "and the team it leads" test -s "$TS/t2"
 ai codex mv helper2 aide2 >/dev/null 2>&1
 check "ai codex mv renames a Codex member" grep -q "^codex:aide2${TAB}" "$T"
 cla rm t2 >/dev/null 2>&1
 ai codex rm aide2 >/dev/null 2>&1
-for n in foo2 bar2 slow; do ai rm "$n" >/dev/null 2>&1; done
+for n in foo2 bar2 slow boss; do ai rm "$n" >/dev/null 2>&1; done
 rm -f "$T" "$HOME/.config/ai-hub/team-lead" "$HOME/slow.log"
+rm -rf "$TS"
 rm -rf "$HOME/.local/state/ai-hub/team"
 
 if command -v jq >/dev/null 2>&1; then
