@@ -417,10 +417,9 @@ team_lock() {
   mkdir -p "$AI_TEAM_DIR/locks" || return 1
   while ! mkdir "$d" 2>/dev/null; do
     pid=$(cat "$d/pid" 2>/dev/null)
-    # its owner is gone, or died before it wrote its pid (that takes a moment, not a minute)
-    if { [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; } ||
-      { [ -z "$pid" ] && [ -n "$(find "$d" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
-      rm -rf "$d"
+    # its owner is gone, or died before it wrote its pid (that takes a moment, not minutes)
+    if team_lock_stale "$d" "$pid"; then
+      team_take_stale "$d" "$pid"
       continue
     fi
     [ "$waited" -eq 0 ] && warn "another member is working in this folder; waiting for it (one at a time, so two agents never edit the same files at once)"
@@ -435,6 +434,26 @@ team_lock() {
   TEAM_LOCK_DIR=$d
   trap 'team_unlock' EXIT
   trap 'team_unlock; exit 130' INT TERM
+}
+# team_lock_stale <lock> <its pid>: a dead owner, or no pid after a minute or two
+team_lock_stale() {
+  if [ -n "$2" ]; then
+    ! kill -0 "$2" 2>/dev/null
+  else
+    [ ! -e "$1/pid" ] && [ -n "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null)" ]
+  fi
+}
+# team_take_stale <lock> <its pid>: two waiters can find the same stale lock, and the first
+# may already have made a new one in its place. So move it aside (only one mv wins), and
+# drop it only when it is still that stale lock; a fresh one is put back.
+team_take_stale() {
+  local t="$1.stale.$$"
+  mv "$1" "$t" 2>/dev/null || return 0
+  if [ "$(cat "$t/pid" 2>/dev/null)" = "$2" ] && team_lock_stale "$t" "$2"; then
+    rm -rf "$t"
+  else
+    mv "$t" "$1" 2>/dev/null || rm -rf "$t"
+  fi
 }
 team_unlock() {
   [ -n "${TEAM_LOCK_DIR:-}" ] && rm -rf "$TEAM_LOCK_DIR"
@@ -526,29 +545,41 @@ team_private() {
   local d=$AI_TEAM_DIR
   mkdir -p "$AI_STATE_DIR" || return 1
   (umask 077 && mkdir -p "$d/logs" "$d/locks" && : >>"$d/journal") || return 1
-  case $(ls -ld "$d/logs") in drwx------*) return 0 ;; esac
+  # all private already: the three folders, the journal and every log
+  case $(ls -ld "$d" "$d/logs" "$d/locks" | cut -c1-10 | sort -u) in
+    drwx------) [ -z "$(find "$d/journal" "$d/logs" -type f \( -perm -040 -o -perm -004 \) 2>/dev/null | head -n 1)" ] && return 0 ;;
+  esac
   chmod 700 "$d" "$d/logs" "$d/locks" && chmod 600 "$d/journal" &&
     find "$d/logs" -type f -exec chmod 600 {} +
 }
 
+# team_done <log>: the delegation has ended. Only its last line counts, in the exact form
+# team_work writes, because a task or a reply can hold a line that starts with "# done".
+team_done() { [ -f "$1" ] && tail -n 1 "$1" | grep -q '^# done (exit [0-9]*) in [0-9]*m[0-9]*s$'; }
+
 # team_prune [days]: delete the logs of finished delegations older than that (default
-# AI_TEAM_KEEP_DAYS; 0 keeps them). A log without "# done" is still running and stays.
+# AI_TEAM_KEEP_DAYS; 0 keeps them). A log that has not ended (team_done) stays.
 team_prune() {
   local days=${1-$AI_TEAM_KEEP_DAYS}
   case $days in '' | *[!0-9]*) warn "AI_TEAM_KEEP_DAYS must be a number of days"; return 0 ;; esac
   [ "$days" -gt 0 ] || [ $# -gt 0 ] || return 0
   [ -d "$AI_TEAM_DIR/logs" ] || return 0
   if [ "$days" -gt 0 ]; then set -- -mtime +"$((days - 1))"; else set --; fi
-  find "$AI_TEAM_DIR/logs" -type f -name '*.log' "$@" -exec grep -q '^# done' {} \; -exec rm -f {} \;
+  local f
+  find "$AI_TEAM_DIR/logs" -type f -name '*.log' "$@" | while IFS= read -r f; do
+    team_done "$f" && rm -f "$f"
+  done
+  return 0
 }
 
 # ai team log --clean: delete every finished log now and empty the journal
 team_clean() {
-  local n
-  n=$(find "$AI_TEAM_DIR/logs" -type f -name '*.log' -exec grep -l '^# done' {} + 2>/dev/null | wc -l | tr -d ' ')
+  local n f
+  n=$(find "$AI_TEAM_DIR/logs" -type f -name '*.log' 2>/dev/null | while IFS= read -r f; do team_done "$f" && echo; done | wc -l | tr -d ' ')
   confirm "delete $n finished delegation logs and the journal (ai team log)?" || return 1
-  team_prune 0
+  # the journal first: a delegation ending meanwhile then keeps its journal line
   [ -f "$AI_TEAM_DIR/journal" ] && : >"$AI_TEAM_DIR/journal"
+  team_prune 0
   echo "deleted $n logs and emptied the journal (running delegations keep theirs)"
 }
 
@@ -578,7 +609,7 @@ team_wait() {
   for f in "$@"; do [ -f "$f" ] || die "no log $f"; done
   while :; do
     todo=0
-    for f in "$@"; do grep -q '^# done' "$f" || todo=$((todo + 1)); done
+    for f in "$@"; do team_done "$f" || todo=$((todo + 1)); done
     [ "$todo" -eq 0 ] && break
     if [ "$waited" -ge "$AI_TEAM_WAIT_STEP" ]; then
       echo "$todo still working after ${waited}s. run ai team wait again"

@@ -244,7 +244,7 @@ chmod 644 "$TL"/*.log
 (cd "$tmp/work" && ai delegate foo2 "fix modes") >/dev/null 2>&1
 check "an older, looser logs folder is tightened" test "$(mode "$TL")" = drwx------
 check "and its old logs" test "$(mode "$(ls -t "$TL"/*slow* | head -n 1)")" = -rw-------
-printf '# old\n# done (exit 0)\n' >"$TL/20200101-000000-old-1.log"
+printf '# old\n# done (exit 0) in 0m01s\n' >"$TL/20200101-000000-old-1.log"
 printf '# old\n# reply:\n' >"$TL/20200101-000000-running-1.log"
 touch -t 202001010000 "$TL/20200101-000000-old-1.log" "$TL/20200101-000000-running-1.log"
 (cd "$tmp/work" && AI_TEAM_KEEP_DAYS=0 ai delegate foo2 "keep") >/dev/null 2>&1
@@ -260,6 +260,28 @@ check "ai team log after --clean" sh -c 'bash "$1/bin/ai" team log | grep -q "no
 (cd "$tmp/work" && ai delegate foo2 "after") >/dev/null 2>&1
 rm -f "$TL"/*.log
 check "ai team log works when a log is gone" sh -c 'bash "$1/bin/ai" team log | grep -q "(deleted)"' _ "$here"
+echo "review fixes"
+L=$HOME/.local/state/ai-hub/team/logs
+mkdir -p "$L"
+printf '# 2026 · x · /w\n# task:\nfix it\n# done when tests pass\n# reply:\n' >"$L/running.log"
+check "a task line starting with # done is not the end" sh -c 'AI_TEAM_WAIT_STEP=0 bash "$1/bin/ai" team wait "$2"; [ $? = 3 ]' _ "$here" "$L/running.log"
+AI_YES=1 ai team log --clean >/dev/null 2>&1
+check "so --clean keeps that running log" test -f "$L/running.log"
+printf '# done (exit 0) in 0m01s\n' >>"$L/running.log"
+AI_YES=1 ai team log --clean >/dev/null 2>&1
+check "and deletes it once it has ended" test ! -e "$L/running.log"
+(cd "$tmp/work" && ai delegate foo2 "x") >/dev/null 2>&1
+chmod 644 "$HOME/.local/state/ai-hub/team/journal"
+(cd "$tmp/work" && ai delegate foo2 "x") >/dev/null 2>&1
+check "a loose journal is fixed even when the logs folder is private" sh -c 'ls -l "$1" | cut -c1-10 | grep -qx -- "-rw-------"' _ "$HOME/.local/state/ai-hub/team/journal"
+lk=$HOME/.local/state/ai-hub/team/locks/$(cd "$tmp/work" && pwd -P | sed 's/[^A-Za-z0-9@]/-/g')
+mkdir -p "$lk"
+check "a fresh lock without a pid is not taken (its owner is about to write it)" sh -c 'cd "$2" && ! AI_TEAM_WAIT=2 bash "$1/bin/ai" delegate foo2 "x" >/dev/null 2>&1' _ "$here" "$tmp/work"
+check "and is left in place" test -d "$lk"
+rm -rf "$lk"
+check "taking over a stale lock puts a fresh one back" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; mkdir -p "$2"; team_take_stale "$2" "" && [ -d "$2" ] && ! ls -d "$2".stale.* >/dev/null 2>&1' _ "$here" "$lk"
+check "and drops a stale one" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; touch -t 202001010000 "$2"; team_take_stale "$2" "" && [ ! -e "$2" ]' _ "$here" "$lk"
+
 echo "sub-teams"
 TS=$HOME/.config/ai-hub/teams
 # boss: an agent that leads a team of its own; it hands part of its task to t1
