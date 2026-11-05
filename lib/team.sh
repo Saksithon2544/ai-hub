@@ -445,16 +445,17 @@ team_lock_stale() {
 }
 # team_take_stale <lock>: two waiters can find the same stale lock, and the first may already
 # have made a new one in its place. So only the waiter that gets <lock>.takeover (mkdir is
-# atomic) looks again and removes the lock, and only if it is still stale. A takeover left by
-# a waiter that died is dropped after a minute or two.
+# atomic) looks again and removes the lock, and only if it is still stale. The takeover holds
+# its waiter's pid like a lock, so it is only dropped when that waiter is gone (not paused).
 team_take_stale() {
   local g="$1.takeover"
   if ! mkdir "$g" 2>/dev/null; then
-    [ -n "$(find "$g" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$g" 2>/dev/null
+    team_lock_stale "$g" "$(cat "$g/pid" 2>/dev/null)" && rm -rf "$g"
     return 0
   fi
+  echo $$ >"$g/pid"
   team_lock_stale "$1" "$(cat "$1/pid" 2>/dev/null)" && rm -rf "$1"
-  rmdir "$g"
+  rm -rf "$g"
 }
 team_unlock() {
   [ -n "${TEAM_LOCK_DIR:-}" ] && rm -rf "$TEAM_LOCK_DIR"

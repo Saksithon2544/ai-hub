@@ -282,8 +282,14 @@ rm -rf "$lk"
 check "a takeover leaves a fresh lock alone" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; mkdir -p "$2"; team_take_stale "$2"; [ -d "$2" ] && [ ! -e "$2.takeover" ]' _ "$here" "$lk"
 check "and drops a stale one" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; touch -t 202001010000 "$2"; team_take_stale "$2"; [ ! -e "$2" ] && [ ! -e "$2.takeover" ]' _ "$here" "$lk"
 mkdir -p "$lk" "$lk.takeover"
+(sleep 60 >/dev/null 2>&1 & echo $! >"$lk.takeover/pid") # a waiter that is alive, not a job of this shell
+touch -t 202001010000 "$lk.takeover"
+check "a takeover whose waiter is alive (even if old) is left alone" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; touch -t 202001010000 "$2"; team_take_stale "$2"; [ -d "$2" ] && [ -d "$2.takeover" ]' _ "$here" "$lk"
+kill "$(cat "$lk.takeover/pid")" 2>/dev/null
+rm -f "$lk.takeover/pid"
 check "while another waiter takes it over, the lock stays" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; touch -t 202001010000 "$2"; team_take_stale "$2"; [ -d "$2" ]' _ "$here" "$lk"
 touch -t 202001010000 "$lk.takeover"
+echo 999999 >"$lk.takeover/pid"
 check "a takeover left by a dead waiter is dropped" bash -c 'for f in common team; do . "$1/lib/$f.sh"; done; team_take_stale "$2"; [ ! -e "$2.takeover" ]' _ "$here" "$lk"
 rm -rf "$lk" "$lk.takeover"
 (cd "$tmp/work" && ai delegate foo2 "x") >/dev/null 2>&1
