@@ -81,8 +81,8 @@ EOF
   tmpd=$(mktemp -d "${TMPDIR:-/tmp}/ai-discover.XXXXXX") || return 1 # an empty folder: nothing to read
   # shellcheck disable=SC2064
   trap "rm -rf '$dir' '$tmpd'" EXIT
-  # ctrl-c: background jobs ignore SIGINT, so stop the interviews with TERM to the whole group
-  trap 'trap "" TERM; kill -TERM 0 2>/dev/null; exit 130' INT TERM
+  # ctrl-c: background jobs ignore SIGINT, so stop each interview (and what it started) with TERM
+  trap 'for pid in ${pids[@]+"${pids[@]}"}; do team_kill_tree "$pid"; done; exit 130' INT TERM
 
   echo "asking ${#ms[@]} members what they do best (at the same time)..."
   for m in "${ms[@]}"; do
@@ -96,8 +96,9 @@ EOF
       echo "  ai doesn't know how to run $m headless: left out" >&2
       continue
     }
-    printf '%s\n' "$m" >"$dir/$i.name"
-    (cd "$tmpd" && team_run "$m" "$c" "$TEAM_INTERVIEW" </dev/null >"$dir/$i.out" 2>"$dir/$i.err") &
+    f=$dir/$(printf '%03d' "$i") # numbered so the glob below keeps this order
+    printf '%s\n' "$m" >"$f.name"
+    (cd "$tmpd" && team_run "$m" "$c" "$TEAM_INTERVIEW" </dev/null >"$f.out" 2>"$f.err") &
     pids+=($!)
   done
   for pid in ${pids[@]+"${pids[@]}"}; do wait "$pid"; done
@@ -150,7 +151,9 @@ $answers"
   echo "the lead ($lead) is splitting the work..."
   c=$(team_default_cmd "$lead") || die "ai doesn't know how to run the lead $lead headless"
   out=$(cd "$tmpd" && team_run "$lead" "$c" "$prompt" </dev/null 2>"$dir/lead.err")
-  roles=$(printf '%s\n' "$out" | sed -n '/^ROLES[[:space:]]*$/,/^END[[:space:]]*$/p' | sed '1d;$d' | tr -d '`\r')
+  # model output: no control characters (they could redraw the screen before you answer)
+  out=$(printf '%s\n' "$out" | tr -d '\000-\011\013-\037\177')
+  roles=$(printf '%s\n' "$out" | sed -n '/^ROLES[[:space:]]*$/,/^END[[:space:]]*$/p' | sed '1d;$d' | tr -d '`')
   why=$(printf '%s\n' "$out" | sed -n '/^WHY[[:space:]]*$/,$p' | sed '1d' | head -n 8 | tr -d '\000-\011\013-\037\177')
   order=$(printf '%s\n' "$out" | sed -n '/^ORDER[[:space:]]*$/,/^END[[:space:]]*$/p' | sed '1d;$d' | tr -d '`\r,>' | tr -s ' \t\n' '\n\n\n')
   [ -n "$roles" ] || {
@@ -205,7 +208,8 @@ EOF
       warn "skipped $mem|${par:-?}: a sub-team leader must be a Claude account in your own team"
       continue
     fi
-    if printf '%s' "$clean" | grep -q "^[^|]*|$mem|"; then
+    # one level deep: not a member that leads a sub-team, now or (not asked again) from before
+    if printf '%s' "$clean" | grep -q "^[^|]*|$mem|" || [ -s "$dir/new/teams/$mem" ]; then
       warn "skipped $mem under $par: it leads a sub-team itself (one level deep only)"
       continue
     fi
@@ -259,4 +263,11 @@ team_succession() {
   [ -n "$claude$other" ] || return 0
   # shellcheck disable=SC2086 # one member per word
   printf '%s\n' "$1" $claude $other
+}
+
+# team_kill_tree <pid>: TERM a process and everything it started (children first)
+team_kill_tree() {
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null); do team_kill_tree "$c"; done
+  kill -TERM "$1" 2>/dev/null
 }

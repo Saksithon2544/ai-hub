@@ -263,6 +263,16 @@ ai team add noisy "prints a lot" "noisy" >/dev/null 2>&1
 (cd "$tmp/work" && AI_TEAM_HANDOFF=0 ai delegate noisy "x") >/dev/null 2>&1
 check "a limit message in the middle of the output is not a limit" test ! -e "$HOME/.local/state/ai-hub/limited/noisy"
 ai team rm noisy >/dev/null 2>&1
+printf '#!/bin/sh\necho "log=${AI_TEAM_LOG:-unset}"\n' >"$tmp/bin/envchk"
+chmod +x "$tmp/bin/envchk"
+ai add envchk envchk "Env" >/dev/null 2>&1
+ai team add envchk "env" "envchk" >/dev/null 2>&1
+check "a member never gets its leader's log (its own delegations write their own)" sh -c 'cd "$2" && AI_TEAM_LOG=$3 bash "$1/bin/ai" delegate envchk x 2>/dev/null | grep -qx "log=unset" && grep -qx "log=unset" "$3"' _ "$here" "$tmp/work" "$TL/given.log"
+ai team rm envchk >/dev/null 2>&1
+AI_YES=1 ai rm envchk >/dev/null 2>&1
+printf '# done (exit 1) in 0m00s\n' >"$TL/never.log"
+check "ai team wait on a delegation that never started says so" sh -c 'bash "$1/bin/ai" team wait "$2" | grep -q "no reply: it never started"' _ "$here" "$TL/never.log"
+rm -f "$TL/never.log" "$TL/given.log"
 AI_YES=1 ai rm noisy >/dev/null 2>&1
 check "agy is a known agent" grep -q "^agy${TAB}agy${TAB}Antigravity CLI\$" "$P"
 ai team add agy "reads code" >/dev/null 2>&1
@@ -494,9 +504,9 @@ check "and saves it (AI_YES), keeping each member's command" sh -c 'grep -qx "co
 check "a sub-team under a non-Claude leader is refused" test ! -e "$TS/codex:helper2"
 check "an unknown member is skipped" eval "! grep -q '^nope' \"$T\""
 check "the old team is kept as .bak" grep -q "^codex:helper2${TAB}small jobs" "$T.bak"
-check "it shows who takes over" sh -c 'printf "%s" "$1" | grep -q "who takes over at a usage limit: t1 -> main -> foo2 -> codex:helper2"' _ "$out"
-check "and saves that order: the lead, Claude accounts first, each once, unknown ones left out" \
-  test "$(head -n 4 "$HOME/.config/ai-hub/failover-order" | tr '\n' ' ')" = "t1 main foo2 codex:helper2 "
+check "it shows who takes over" sh -c 'printf "%s" "$1" | grep -q "who takes over at a usage limit: t1 -> main -> codex:helper2$"' _ "$out"
+check "and saves that order: the lead, Claude accounts first, each once, the rest left out" \
+  test "$(tr '\n' ' ' <"$HOME/.config/ai-hub/failover-order")" = "t1 main codex:helper2 "
 rm -f "$HOME/.config/ai-hub/failover-order" "$HOME/.config/ai-hub/failover-order.bak"
 cp "$T" "$tmp/team.now"
 (cd "$tmp/work" && printf 'n\n' | AI_YES=0 FAKE_ROLES='ROLES
@@ -525,6 +535,17 @@ t3|-|x
 END' ai team discover 2>&1)
 check "a member at its limit is left out, and kept" sh -c 'printf "%s" "$1" | grep -q "codex:helper2 is at its usage limit: left out" && grep -q "^codex:helper2" "$2"' _ "$out" "$T"
 rm -f "$HOME/.local/state/ai-hub/limited/codex:helper2"
+cla add t4 >/dev/null 2>&1
+ai team add t4 "y" >/dev/null 2>&1
+esc=$(printf '\033')
+out=$(cd "$tmp/work" && FAKE_ROLES="ROLES
+t4|-|leads now
+t3|t4|under t4
+${esc}[2Jfake|-|x
+END" ai team discover t3 t4 2>&1)
+check "a member that still leads its old sub-team is not put under another leader" sh -c 'test ! -e "$1/t4" && printf "%s" "$2" | grep -q "skipped t3 under t4"' _ "$TS" "$out"
+check "the lead's text can't send control characters to the screen" sh -c 'printf "%s" "$1" | grep -qF "$2[2J" && exit 1 || exit 0' _ "$out" "$esc"
+cla rm t4 >/dev/null 2>&1
 rm -rf "$TS"
 cla rm t3 >/dev/null 2>&1
 cp "$tmp/team.keep2" "$T"
@@ -578,9 +599,9 @@ check "ai rm keeps a name that is still a Claude account" grep -q "^gemini${TAB}
 check "and in the failover order" grep -qx gemini "$FO"
 ai add gemini "echo gem:" >/dev/null 2>&1
 cla rm gemini >/dev/null 2>&1
-check "cla rm keeps a name that is still an agent" grep -q "^gemini${TAB}" "$T"
-check "but takes it out of the failover order (it meant the account)" eval "! grep -qx gemini \"$FO\""
-check "ai rm of the last one by that name takes it out" sh -c 'bash "$1/bin/ai" rm gemini | grep -qx "also removed gemini from the team"' _ "$here"
+check "cla rm takes the name out of the team even when an agent has it (it meant the account)" eval "! grep -q '^gemini${TAB}' \"$T\""
+check "and out of the failover order" eval "! grep -qx gemini \"$FO\""
+AI_YES=1 ai rm gemini >/dev/null 2>&1
 check "the team no longer has it" eval "! grep -q '^gemini${TAB}' \"$T\""
 ai add zz "echo zz:" >/dev/null 2>&1
 check "removing what is in no team says nothing more" sh -c '! bash "$1/bin/ai" rm zz | grep -q "also removed"' _ "$here"
@@ -717,6 +738,9 @@ if command -v jq >/dev/null 2>&1; then
   ai add agy agy "Antigravity CLI" >/dev/null 2>&1
   check "order accepts an agent from ai ls" sh -c 'bash "$1/bin/ai" failover order a codex:helper agy | grep -q "agy .*Antigravity CLI: gets the conversation so far, the chain ends here"' _ "$here"
   check "order refuses Claude or Codex by agent name" eval '! ai failover order codex'
+  ai add op "echo" "Other" >/dev/null 2>&1
+  check "order refuses an agent ai can't start with the conversation" eval '! ai failover order a op'
+  AI_YES=1 ai rm op >/dev/null 2>&1
   only_a
   : >"$HOME/codex.log"
   : >"$HOME/agy.log"

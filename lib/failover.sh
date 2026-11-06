@@ -32,12 +32,15 @@ fo_member_ok() {
     *) acct_exists "$1" || fo_is_agent "$1" ;;
   esac
 }
-# an agent from `ai ls` that is not Claude or Codex (those are named by account here)
+# an agent from `ai ls` that can take a session over: one ai knows how to start with a first
+# message and keep open (agy, gemini, qwen: -i). Claude and Codex are named by account here;
+# another CLI might read the conversation as a folder or a file name, so it can't be in the order.
 fo_is_agent() {
   case $1 in codex:*) return 1 ;; esac
   acct_exists "$1" && return 1
   prov_has "$1" || return 1
-  case $(prov_agent "$1") in claude | codex) return 1 ;; esac
+  case $(prov_agent "$1") in agy | gemini | qwen) return 0 ;; esac
+  return 1
 }
 # a member that is not a Claude account: it gets the conversation as text
 fo_other() {
@@ -151,7 +154,7 @@ fo_set_order() {
   local a tmp
   [ $# -gt 0 ] || die "usage: ai failover order <member>...   (Claude accounts from: cla ls; Codex as codex:<name> from: ai codex ls; other agents from: ai ls)"
   for a in "$@"; do
-    fo_member_ok "$a" || die "no account or agent '$a'. see: cla ls, ai codex ls (written codex:<name>), or ai ls"
+    fo_member_ok "$a" || die "'$a' can't be in the order: a Claude account (cla ls), codex:<name> (ai codex ls), or agy, gemini or qwen from ai ls"
   done
   mkdir -p "$AI_CONFIG_DIR" || return 1
   tmp=$(mktemp "$AI_FO_ORDER.XXXXXX") || return 1
@@ -310,13 +313,7 @@ fo_start_other() {
   p=$(fo_takeover "$2")
   case $1 in
     codex:*) cdx_env "${1#codex:}" launch "$(codex_cmd)" "$p" ;;
-    *)
-      # these take a first prompt and stay open with -i; others take it as an argument
-      case $(prov_agent "$1") in
-        agy | gemini | qwen) launch "$(prov_get "$1" 2)" -i "$p" ;;
-        *) launch "$(prov_get "$1" 2)" "$p" ;;
-      esac
-      ;;
+    *) launch "$(prov_get "$1" 2)" -i "$p" ;; # fo_is_agent: they all keep a first prompt open with -i
   esac
 }
 

@@ -129,7 +129,7 @@ When Claude says you've hit a limit, exit Claude (`/exit` or ctrl-c twice). `ai`
 
 #### Hand over to Codex or another agent
 
-Put a Codex account in the order as `codex:<name>`, or another agent from `ai ls` (e.g. `agy`, the Antigravity CLI), usually last, so they pick up the work when every Claude account is out:
+Put a Codex account in the order as `codex:<name>`, or an agent from `ai ls` that ai can start with the conversation (`agy` the Antigravity CLI, `gemini` or `qwen`; another CLI could read it as a folder or file name), usually last, so they pick up the work when every Claude account is out:
 
 ```bash
 ai failover order main work codex:main agy
@@ -263,7 +263,7 @@ Everything works without these. Set one for a single run (`AI_TEAM_REPORT='' ai 
 - **Other agents' JSON files are edited carefully**: checked to be valid JSON before and after, the original backed up once as `<file>.ai-hub.bak`, and the new file swapped in with a single rename that keeps the original permissions, so a running agent never reads a half-written file
 - **`cla` works from inside a Claude window** (e.g. `! cla ls`): `main` always means `~/.claude`, never the account that is currently open. The same goes for `ai codex` and `~/.codex`
 - **Shared trust is off by default**, because trusting a folder lets an agent load that folder's own settings, hooks and MCP servers. A repo trusted once becomes trusted in every agent
-- **Failover stays within your own Claude accounts unless you add Codex or another agent**: a conversation only goes to another provider when you put a `codex:` account or an agent in the order yourself and answer `y` at that moment. `cla rm` always takes the name out of the order, even when an agent has the same name
+- **Failover stays within your own Claude accounts unless you add Codex or another agent**: a conversation only goes to another provider when you put a `codex:` account or an agent in the order yourself and answer `y` at that moment. `cla rm` always takes the name out of the order and the teams, even when an agent has the same name, so the work never goes to that agent instead
 - **A team task that a member can't finish at its limit goes to another member of the same team**, which can be another provider: it is in the team because you added it there
 - **Accounts made with `cla add` share settings**, including the hooks and plugins set in `~/.claude/settings.json`. If those settings contain `env` (e.g. `ANTHROPIC_API_KEY`) or `apiKeyHelper`, every account uses the same value. If you don't want that, remove the `settings.json` link in that account's folder and create its own file
 - **The team lead runs `ai delegate` without asking**, and team members may use the folders in `ai team access`, which they can also change. Keep that list short

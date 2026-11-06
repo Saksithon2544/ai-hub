@@ -231,10 +231,12 @@ team_rename() {
 }
 
 # after `cla rm` / `ai codex rm` / `ai rm`: a name that no longer resolves (an account and an
-# agent can share a name) leaves every team, its own team and the lead. Fails when it was in none.
+# agent can share a name) leaves every team, its own team and the lead. After `cla rm`
+# (account) it leaves even when an agent has the same name: the team meant the account, and
+# the agent would send the work to another provider. Fails when it was in none.
 team_forget() {
   local f hit=1
-  team_member_ok "$1" && return 1
+  if [ "${2:-}" = account ]; then acct_exists "$1" && return 1; else team_member_ok "$1" && return 1; fi
   for f in "$AI_TEAM" "$AI_TEAMS"/*; do
     [ -f "$f" ] && [ -n "$(tsv_get "$f" "$1" 1)" ] || continue
     tsv_put "$f" "$1" && hit=0
@@ -247,7 +249,7 @@ team_forget() {
 # forget_member <name> [account]: team_forget and fo_forget, saying what was cleaned up
 forget_member() {
   local what=
-  team_forget "$1" && what="the team"
+  team_forget "$1" "${2:-}" && what="the team"
   fo_forget "$1" "${2:-}" && what="${what:+$what and }the failover order"
   [ -z "$what" ] || echo "also removed $1 from $what"
 }
@@ -509,6 +511,8 @@ ai_delegate() {
   team_private || return 1
   team_prune
   log=${AI_TEAM_LOG:-$AI_TEAM_DIR/logs/$(date +%Y%m%d-%H%M%S)-$(echo "$m" | tr : -)-$$.log}
+  # only for this delegation: a member that delegates in turn writes its own log
+  unset AI_TEAM_LOG
   if [ -n "$bg" ]; then
     # a fresh ai process, so the lock belongs to it and it outlives this shell
     (umask 077 && : >"$log") || return 1
@@ -634,7 +638,8 @@ team_backup() {
 # team_handoff_task <member> <its task> <what it wrote>: the task for the member taking over
 team_handoff_task() {
   local r
-  r=$(printf '%s' "$3" | tail -c "$AI_TEAM_HANDOFF_MAX")
+  # the end of it, from a line start (never half a line or half a character)
+  [ -z "$3" ] || r=$(AI_FO_HANDOFF_MAX=$AI_TEAM_HANDOFF_MAX fo_cut "$3")
   printf '%s\n' "\"$1\" started this task and stopped at its usage limit. You take it over. It may already have changed files here: look at \`git status\` and \`git diff\` first, keep what is done, and finish the rest.
 
 # The task
@@ -734,6 +739,8 @@ team_wait() {
   for f in "$@"; do
     printf '=== %s\n' "$(head -n 1 "$f" | sed 's/^# //')"
     # after a hand-over, only the reply of the member that finished
-    awk 'NR == FNR { if ($0 == "# reply:") n = FNR; next } FNR > n' "$f" "$f"
+    awk 'NR == FNR { if ($0 == "# reply:") n = FNR; next }
+      n && FNR > n { print }
+      END { if (!n) print "(no reply: it never started; the log says why)" }' "$f" "$f"
   done
 }
