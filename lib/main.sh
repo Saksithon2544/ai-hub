@@ -32,22 +32,25 @@ ai ls                               list agents and their launch commands
 ai add  <name> <command> [label]    add an agent      e.g. ai add aider "aider --model sonnet"
 ai edit <name> <command> [label]    change its command
 ai rm   <name>                      remove it from the list
-ai scan                             add known agents installed since (claude codex gemini ...)
+ai scan                             add known agents installed since (claude codex agy gemini ...)
 
 cla ...                             several Claude accounts (see: cla help)
 ai codex ...                        several Codex accounts (see: ai codex help)
 
 ai trust [on|off|status]            share folder trust between agents (off by default)
-ai failover [on|off|status]         resume on the next Claude account at a usage limit
+ai failover [on|off|status]         at a usage limit, go on with the next account or agent
 ai failover order <account>...     set the order (top is tried first)
 ai failover clear [account]         forget a limit
 
 ai team setup                       set up a team of agents by answering a few questions
+ai team discover                    let the members say what they do best and the lead split the work
 ai do "<task>"                      give the team a task (the lead hands parts to the others)
 ai team                             start the team lead with a brief of its members (see: ai team help)
 ai team add <member> "<good at>"    add a member: a Claude account, codex:<name>, or an agent from ai ls
 ai team add --of <m> <member> ...   give a member a team of its own
 ai delegate <member> "<task>"       run a member on a task in this folder (the lead uses this)
+
+ai version                          print the version
 
 Files: ~/.config/ai-hub (settings)  ~/.local/state/ai-hub (limits)  ~/.claude-accounts (accounts)
 Optional tools: fzf (searchable picker), jq (usage bars, trust, failover)

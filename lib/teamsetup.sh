@@ -26,7 +26,7 @@ team_access_opts() {
     [ -n "$d" ] || continue
     case $1 in
       claude) out="$out $(printf '%q' "$d")" ;;
-      codex) out="$out --add-dir $(printf '%q' "$d")" ;;
+      codex | agy) out="$out --add-dir $(printf '%q' "$d")" ;;
       gemini | qwen) out="$out --include-directories $(printf '%q' "$d")" ;;
     esac
   done <<LIST
@@ -192,7 +192,7 @@ team_setup() {
   # 2. members
   others=$(setup_without "$all" "$lead")
   if [ -z "$others" ]; then
-    echo "There is no other account or agent to join the team yet. Add one first, e.g.: cla add work, ai codex add work, or install gemini and run ai scan"
+    echo "There is no other account or agent to join the team yet. Add one first, e.g.: cla add work, ai codex add work, or install another agent (e.g. agy, the Antigravity CLI) and run ai scan"
     return 1
   fi
   echo "2) Who works with $lead? Give the numbers, e.g. 1 3"

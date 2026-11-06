@@ -3,12 +3,13 @@
 # The command runs like a shell alias, so quotes and VAR=value prefixes work, e.g.
 #   work<TAB>CODEX_HOME=~/.codex-work codex<TAB>Codex (work)
 
-AI_KNOWN="claude codex gemini qwen opencode kimi"
+AI_KNOWN="claude codex agy gemini qwen opencode kimi"
 
 prov_label() {
   case $1 in
     claude) echo "Claude Code" ;;
     codex) echo "Codex CLI" ;;
+    agy) echo "Antigravity CLI" ;;
     gemini) echo "Gemini CLI" ;;
     qwen) echo "Qwen Code" ;;
     opencode) echo "OpenCode" ;;

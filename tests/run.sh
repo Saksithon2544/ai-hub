@@ -29,6 +29,8 @@ case " $* " in *" -p "*)
     exit 1
   fi
   for last; do :; done
+  # FAKE_ROLES: the lead's answer to ai team discover
+  case $last in *ROLES*) [ -n "${FAKE_ROLES:-}" ] && printf '%s\n' "$FAKE_ROLES" && exit 0 ;; esac
   echo "claude says: $last"
   exit 0
   ;;
@@ -46,17 +48,32 @@ exit 0
 EOF
 chmod +x "$tmp/bin/claude"
 # fake codex: logs "<CODEX_HOME folder>|<args>" (a handed-over prompt spans several lines);
-# `codex exec` answers "codex says: <last arg>"
+# `codex exec` answers "codex says: <last arg>". With FAKE_CODEX_LIMIT=1 a session ends at
+# its plan limit: it writes a session file like Codex does, in this folder.
 cat >"$tmp/bin/codex" <<'EOF'
 #!/usr/bin/env bash
 printf '%s|%s\n' "$(basename "${CODEX_HOME:-$HOME/.codex}")" "$*" >>"$HOME/codex.log"
 if [ "${1:-}" = exec ]; then
   for last; do :; done
   echo "codex says: $last"
+elif [ -n "${FAKE_CODEX_LIMIT:-}" ]; then
+  sleep 1
+  d=${CODEX_HOME:-$HOME/.codex}/sessions/2026/01/01
+  mkdir -p "$d"
+  jq -nc --arg d "$(pwd -P)" '{type: "session_meta", payload: {cwd: $d}}' >"$d/rollout-1.jsonl"
+  jq -nc --arg t "$1" '{type: "response_item", payload: {type: "message", role: "user", content: [{type: "input_text", text: $t}]}}' >>"$d/rollout-1.jsonl"
+  jq -nc '{type: "response_item", payload: {type: "message", role: "user", content: [{type: "input_text", text: "<environment_context>x</environment_context>"}]}}' >>"$d/rollout-1.jsonl"
+  jq -nc '{type: "response_item", payload: {type: "message", role: "assistant", content: [{type: "output_text", text: "codex did half"}]}}' >>"$d/rollout-1.jsonl"
+  jq -nc --argjson r "$(($(date +%s) + 7200))" '{type: "event_msg", payload: {type: "token_count", rate_limits: {primary: {used_percent: 100, resets_at: $r}, secondary: null, rate_limit_reached_type: "primary"}}}' >>"$d/rollout-1.jsonl"
 fi
 exit 0
 EOF
-chmod +x "$tmp/bin/codex"
+# fake agy (Antigravity CLI): logs "<args>"
+cat >"$tmp/bin/agy" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$HOME/agy.log"
+EOF
+chmod +x "$tmp/bin/agy" "$tmp/bin/codex"
 export PATH="$tmp/bin:$PATH"
 
 fails=0
@@ -195,7 +212,11 @@ check "failover keeps every tool the lead may run" bash -c 'for f in common fail
 check "the lead gets the extra args" grep -q ' --x$' "$HOME/claude.log"
 : >"$HOME/claude.log"
 check "ai delegate runs a Claude member headless" sh -c 'cd "$2" && bash "$1/bin/ai" delegate t1 "write the docs" 2>/dev/null | grep -qx "claude says: write the docs"' _ "$here" "$tmp/work"
-check "on its account, with -p" grep -qx 't1|-p --permission-mode acceptEdits write the docs' "$HOME/claude.log"
+check "on its account, with -p, lean" grep -qx 't1|-p --permission-mode acceptEdits --strict-mcp-config --disable-slash-commands --tools=Read,Edit,Write,Bash,Glob,Grep write the docs' "$HOME/claude.log"
+check "every task asks for a short report" grep -q 'reply with a short report (at most 15 lines)' "$HOME/claude.log"
+: >"$HOME/claude.log"
+(cd "$tmp/work" && AI_TEAM_CLAUDE_LEAN='' AI_TEAM_REPORT='' ai delegate t1 "full") >/dev/null 2>&1
+check "AI_TEAM_CLAUDE_LEAN= and AI_TEAM_REPORT= turn them off" sh -c 'grep -qx "t1|-p --permission-mode acceptEdits full" "$1" && ! grep -q "short report" "$1"' _ "$HOME/claude.log"
 check "ai delegate runs a Codex member with codex exec" sh -c 'cd "$2" && bash "$1/bin/ai" delegate codex:helper2 "add tests" 2>/dev/null | grep -qx "codex says: add tests" && grep -qx "helper2|exec --sandbox workspace-write --skip-git-repo-check add tests" "$HOME/codex.log"' _ "$here" "$tmp/work"
 check "a member with its own command" sh -c 'cd "$2" && bash "$1/bin/ai" delegate foo2 "hi there" 2>/dev/null | grep -qx "member: hi there"' _ "$here" "$tmp/work"
 check "the task can come from stdin" sh -c 'cd "$2" && printf "from stdin" | bash "$1/bin/ai" delegate foo2 - 2>/dev/null | grep -qx "member: from stdin"' _ "$here" "$tmp/work"
@@ -203,14 +224,59 @@ check "ai delegate refuses a member not in the team" eval '! ai delegate main x'
 check "ai delegate needs a task" sh -c 'cd "$2" && ! bash "$1/bin/ai" delegate foo2 </dev/null' _ "$here" "$tmp/work"
 check "the log keeps the task and the reply" sh -c 'f=$(ls -t "$1"/*foo2* | head -n 1); grep -qx "from stdin" "$f" && grep -qx "member: from stdin" "$f" && grep -q "^# done (exit 0)" "$f"' _ "$TL"
 check "ai team log lists them" sh -c 'bash "$1/bin/ai" team log | grep -q "foo2.*hi there"' _ "$here"
+printf '#!/bin/sh\necho "permission denied: no output" >&2\n' >"$tmp/bin/quiet"
+chmod +x "$tmp/bin/quiet"
+ai add quiet quiet "Quiet" >/dev/null 2>&1
+ai team add quiet "says nothing" "quiet" >/dev/null 2>&1
+check "a member that prints nothing shows why" sh -c 'cd "$2" && bash "$1/bin/ai" delegate quiet "x" 2>&1 >/dev/null | grep -A5 "without a reply" | grep -q "permission denied: no output"' _ "$here" "$tmp/work"
+ai team rm quiet >/dev/null 2>&1
+AI_YES=1 ai rm quiet >/dev/null 2>&1
 mkdir -p "$HOME/.claude-accounts/a"
 ai team add a "x" >/dev/null 2>&1
-check "a member at its usage limit fails" sh -c 'cd "$2" && ! bash "$1/bin/ai" delegate a "x" >/dev/null 2>&1' _ "$here" "$tmp/work"
+check "a member at its usage limit fails (with AI_TEAM_HANDOFF=0)" sh -c 'cd "$2" && ! AI_TEAM_HANDOFF=0 bash "$1/bin/ai" delegate a "x" >/dev/null 2>&1' _ "$here" "$tmp/work"
 check "and is marked limited" test -f "$HOME/.local/state/ai-hub/limited/a"
 : >"$HOME/claude.log"
 check "a limited member is refused without running" sh -c 'cd "$2" && ! bash "$1/bin/ai" delegate a "x" >/dev/null 2>&1 && ! grep -q "^a|" "$HOME/claude.log"' _ "$here" "$tmp/work"
 check "ai team ls shows the limit" sh -c 'bash "$1/bin/ai" team ls | grep -q limited' _ "$here"
 ai failover clear a >/dev/null 2>&1
+: >"$HOME/claude.log"
+out=$(cd "$tmp/work" && ai delegate a "fix the bug" 2>"$tmp/handoff.err")
+check "a member that stops at its limit hands the task to the next free member" sh -c 'printf "%s\n" "$1" | grep -qx "claude says: \"a\" started this task and stopped at its usage limit. You take it over. It may already have changed files here: look at \`git status\` and \`git diff\` first, keep what is done, and finish the rest."' _ "$out"
+check "which gets the task" sh -c 'printf "%s\n" "$1" | grep -qx "fix the bug"' _ "$out"
+check "and what the first one wrote" sh -c 'printf "%s\n" "$1" | grep -q "usage limit reached|1700000000"' _ "$out"
+check "it says who took over" grep -q "handing the task to t1" "$tmp/handoff.err"
+lf=$(ls -t "$TL"/*-a-*.log | head -n 1)
+check "one log holds both, and ends once" sh -c 'grep -q "^# a stopped at its usage limit after .*: handed over to t1$" "$1" && [ "$(grep -c "^# done (exit" "$1")" = 1 ] && tail -n 1 "$1" | grep -q "^# done (exit 0)"' _ "$lf"
+check "the journal has a line for each, with the first task line" sh -c 'tail -n 2 "$1" | cut -f2,7 | tr "\t\n" ":," | grep -qx "a:fix the bug,t1:fix the bug,"' _ "$HOME/.local/state/ai-hub/team/journal"
+check "the one that handed over is not an end for ai team wait" sh -c 'tail -n 2 "$1" | head -n 1 | cut -f4 | grep -qx handoff' _ "$HOME/.local/state/ai-hub/team/journal"
+check "ai team wait prints only the reply of the one that finished" sh -c 'bash "$1/bin/ai" team wait "$2" | grep -c "^claude says:" | grep -qx 1 && ! bash "$1/bin/ai" team wait "$2" | grep -qx "# task:"' _ "$here" "$lf"
+hl=$TL/handing.log
+printf '# x\n# task:\nt\n# reply:\n# a stopped at its usage limit after 0m01s: handed over to t1\n' >"$hl"
+printf '2026-01-01 00:00\ta\t/x\thandoff\t1\t%s\tt\t\n' "$hl" >>"$HOME/.local/state/ai-hub/team/journal"
+check "a log whose task was handed over and is still running is not done" sh -c 'AI_TEAM_WAIT_STEP=0 bash "$1/bin/ai" team wait "$2" >/dev/null; [ $? = 3 ]' _ "$here" "$hl"
+rm -f "$hl"
+ai failover clear a >/dev/null 2>&1
+printf '#!/bin/sh\necho "Claude AI usage limit reached in a file it read"\nfor i in 1 2 3 4 5 6; do echo "line $i"; done\nexit 1\n' >"$tmp/bin/noisy"
+chmod +x "$tmp/bin/noisy"
+ai add noisy noisy "Noisy" >/dev/null 2>&1
+ai team add noisy "prints a lot" "noisy" >/dev/null 2>&1
+(cd "$tmp/work" && AI_TEAM_HANDOFF=0 ai delegate noisy "x") >/dev/null 2>&1
+check "a limit message in the middle of the output is not a limit" test ! -e "$HOME/.local/state/ai-hub/limited/noisy"
+ai team rm noisy >/dev/null 2>&1
+AI_YES=1 ai rm noisy >/dev/null 2>&1
+check "agy is a known agent" grep -q "^agy${TAB}agy${TAB}Antigravity CLI\$" "$P"
+ai team add agy "reads code" >/dev/null 2>&1
+check "agy runs headless without a command of its own" sh -c 'bash "$1/bin/ai" team ls | grep -q "agy --mode accept-edits --disable-slash-commands -p"' _ "$here"
+ai team rm agy >/dev/null 2>&1
+check "agy gets the access folders as --add-dir" bash -c 'for f in common providers accounts codex failover team teamsetup; do . "$1/lib/$f.sh"; done; mkdir -p "$2"; AI_TEAM_ACCESS=$3; printf "%s\n" "$2" >"$3"; team_access_opts agy | grep -q -- "--add-dir $2"' _ "$here" "$tmp/accdir" "$tmp/acc.list"
+lk=$HOME/.local/state/ai-hub/team/locks/$(cd "$tmp/work" && pwd -P | sed 's/[^A-Za-z0-9@]/-/g')
+mkdir -p "$lk" && sleep 30 &
+busy=$!
+echo "$busy" >"$lk/pid"
+(cd "$tmp/work" && AI_TEAM_WAIT=0 AI_TEAM_LOG=$TL/busy.log ai delegate foo2 "x") >/dev/null 2>&1
+check "a delegation that gives up waiting for the folder still ends its log" sh -c 'tail -n 1 "$1" | grep -q "^# done (exit 1)"' _ "$TL/busy.log"
+kill "$busy" 2>/dev/null
+rm -rf "$lk" "$TL/busy.log"
 ai team rm a >/dev/null 2>&1
 check "ai team rm removes it" eval "! grep -q '^a' \"$T\""
 cat >"$tmp/bin/slow" <<'EOF'
@@ -333,7 +399,7 @@ check "delegation stops at AI_TEAM_MAX_DEPTH" sh -c 'cd "$2" && ! AI_TEAM_MAX_DE
 ai team add --of t1 foo2 "echo" "echo member:" >/dev/null 2>&1
 : >"$HOME/claude.log"
 (cd "$tmp/work" && ai delegate t1 "lead it") >/dev/null 2>&1
-check "a Claude member with a team may run ai delegate" grep -q '^t1|-p --permission-mode acceptEdits --allowedTools Bash(ai delegate:\*)' "$HOME/claude.log"
+check "a Claude member with a team may run ai delegate" grep -q '^t1|-p --permission-mode acceptEdits --strict-mcp-config --disable-slash-commands --tools=Read,Edit,Write,Bash,Glob,Grep --allowedTools Bash(ai delegate:\*)' "$HOME/claude.log"
 check "and gets its brief as a system prompt" grep -q -- '--append-system-prompt You are "t1"' "$HOME/claude.log"
 : >"$HOME/claude.log"
 (cd "$tmp/work" && AI_TEAM_MAX_DEPTH=1 ai delegate t1 "alone") >/dev/null 2>&1
@@ -402,6 +468,67 @@ rm -f "$HOME/.config/ai-hub/team-access" "$T.bak"
 cp "$tmp/team.keep" "$T"
 rm -rf "$TS" && mv "$TS.bak" "$TS"
 cp "$tmp/lead.keep" "$HOME/.config/ai-hub/team-lead"
+echo "team discover"
+cp "$T" "$tmp/team.keep2"
+cp -R "$TS" "$tmp/teams.keep2"
+printf 'codex:helper2\tsmall jobs\t\nfoo2\tdocs\techo member:\n' >"$T"
+rm -rf "$TS"
+: >"$HOME/claude.log"
+: >"$HOME/codex.log"
+roles='ROLES
+codex:helper2 | - | refactors and tests
+foo2|-|writing docs
+foo2|codex:helper2|a Codex member can not lead
+nope|-|x
+END
+ORDER
+foo2 -> codex:helper2 -> main -> nope -> main -> t1
+END
+WHY
+codex writes code, foo2 writes'
+out=$(cd "$tmp/work" && FAKE_ROLES=$roles ai team discover 2>&1)
+check "discover asks every member about itself" sh -c 'grep -q "^helper2|exec .*You are being interviewed" "$HOME/codex.log"'
+check "the lead gets their answers and the facts" sh -c 'grep -q "^## codex:helper2$" "$1" && grep -q "^facts (from ai-hub): Codex CLI (OpenAI), account helper2" "$1" && grep -q "^member: You are being interviewed" "$1"' _ "$HOME/claude.log"
+check "it shows the proposal and why" sh -c 'printf "%s" "$1" | grep -q "refactors and tests" && printf "%s" "$1" | grep -q "codex writes code"' _ "$out"
+check "and saves it (AI_YES), keeping each member's command" sh -c 'grep -qx "codex:helper2${2}refactors and tests${2}" "$1" && grep -qx "foo2${2}writing docs${2}echo member:" "$1"' _ "$T" "$TAB"
+check "a sub-team under a non-Claude leader is refused" test ! -e "$TS/codex:helper2"
+check "an unknown member is skipped" eval "! grep -q '^nope' \"$T\""
+check "the old team is kept as .bak" grep -q "^codex:helper2${TAB}small jobs" "$T.bak"
+check "it shows who takes over" sh -c 'printf "%s" "$1" | grep -q "who takes over at a usage limit: t1 -> main -> foo2 -> codex:helper2"' _ "$out"
+check "and saves that order: the lead, Claude accounts first, each once, unknown ones left out" \
+  test "$(head -n 4 "$HOME/.config/ai-hub/failover-order" | tr '\n' ' ')" = "t1 main foo2 codex:helper2 "
+rm -f "$HOME/.config/ai-hub/failover-order" "$HOME/.config/ai-hub/failover-order.bak"
+cp "$T" "$tmp/team.now"
+(cd "$tmp/work" && printf 'n\n' | AI_YES=0 FAKE_ROLES='ROLES
+foo2|-|other
+END' ai team discover) >/dev/null 2>&1
+check "answering n changes nothing" cmp -s "$T" "$tmp/team.now"
+check "discover refuses the lead as a member" eval '! ai team discover t1'
+check "a lead answer without ROLES changes nothing" sh -c 'cd "$3" && ! AI_YES=1 bash "$1/bin/ai" team discover foo2 >/dev/null 2>&1 && cmp -s "$2" "$4"' _ "$here" "$T" "$tmp/work" "$tmp/team.now"
+check "discover leaves no temp folders" sh -c '! ls "$1" | grep -q discover' _ "$HOME/.local/state/ai-hub/team"
+cla add t3 >/dev/null 2>&1
+ai team add t3 "x" >/dev/null 2>&1
+cp "$T" "$tmp/team.before"
+out=$(cd "$tmp/work" && FAKE_ROLES='ROLES
+t3|-|leads the docs team
+foo2|t3|docs pages
+codex:helper2|t1|under the lead
+foo2|nope|x
+END' ai team discover t3 foo2 2>&1)
+check "discover <member>... keeps the members it did not ask" grep -q "^codex:helper2${TAB}refactors and tests${TAB}" "$T"
+check "a valid sub-team is saved, with the member's command" grep -qx "foo2${TAB}docs pages${TAB}echo member:" "$TS/t3"
+check "a member the lead only put in a sub-team leaves the lead's team" eval "! grep -q '^foo2' \"$T\""
+check "the lead can't lead a sub-team of its own" test ! -e "$TS/t1"
+: >"$HOME/.local/state/ai-hub/limited/codex:helper2"
+out=$(cd "$tmp/work" && printf 'n\n' | AI_YES=0 FAKE_ROLES='ROLES
+t3|-|x
+END' ai team discover 2>&1)
+check "a member at its limit is left out, and kept" sh -c 'printf "%s" "$1" | grep -q "codex:helper2 is at its usage limit: left out" && grep -q "^codex:helper2" "$2"' _ "$out" "$T"
+rm -f "$HOME/.local/state/ai-hub/limited/codex:helper2"
+rm -rf "$TS"
+cla rm t3 >/dev/null 2>&1
+cp "$tmp/team.keep2" "$T"
+rm -rf "$TS" "$T.bak" && cp -R "$tmp/teams.keep2" "$TS"
 cla mv t1 t2 >/dev/null 2>&1
 check "cla mv renames the member and the lead" sh -c 'grep -q "^t2$(printf "\t")" "$1" && grep -qx t2 "$2"' _ "$T" "$HOME/.config/ai-hub/team-lead"
 check "cla mv renames a member in a sub-team" grep -q "^t2${TAB}" "$TS/boss"
@@ -452,7 +579,7 @@ check "and in the failover order" grep -qx gemini "$FO"
 ai add gemini "echo gem:" >/dev/null 2>&1
 cla rm gemini >/dev/null 2>&1
 check "cla rm keeps a name that is still an agent" grep -q "^gemini${TAB}" "$T"
-check "but takes it out of the failover order" eval "! grep -qx gemini \"$FO\""
+check "but takes it out of the failover order (it meant the account)" eval "! grep -qx gemini \"$FO\""
 check "ai rm of the last one by that name takes it out" sh -c 'bash "$1/bin/ai" rm gemini | grep -qx "also removed gemini from the team"' _ "$here"
 check "the team no longer has it" eval "! grep -q '^gemini${TAB}' \"$T\""
 ai add zz "echo zz:" >/dev/null 2>&1
@@ -558,17 +685,25 @@ if command -v jq >/dev/null 2>&1; then
   check "a context limit does not count" eval '! hit "Context limit reached · /compact or /clear to continue"'
 
   echo "failover to codex"
+  # every Claude account but a is at its limit, so a hands over to Codex (free Claude
+  # accounts are tried first)
+  only_a() {
+    ai failover clear >/dev/null 2>&1
+    for x in main $(ls "$HOME/.claude-accounts"); do
+      [ "$x" = a ] || : >"$HOME/.local/state/ai-hub/limited/$x"
+    done
+  }
   ai codex add helper >/dev/null 2>&1
   check "Codex is not in the order unless you add it" eval "! bash \"$here/bin/ai\" failover status | grep -q codex:"
   check "order refuses an unknown Codex account" eval '! ai failover order codex:nope'
   ai failover order a codex:helper >/dev/null 2>&1
   check "order accepts a Codex account" sh -c 'bash "$1/bin/ai" failover status | grep -q "codex:helper"' _ "$here"
-  ai failover clear >/dev/null 2>&1
+  only_a
   : >"$HOME/codex.log"
   : >"$HOME/claude.log"
   (cd "$tmp/work" && printf '\n' | bash "$here/bin/cla" a) >/dev/null 2>&1
   check "just enter does not hand over to Codex" test ! -s "$HOME/codex.log"
-  ai failover clear >/dev/null 2>&1
+  only_a
   (cd "$tmp/work" && printf 'y\n' | bash "$here/bin/cla" a) >/dev/null 2>&1
   check "the session is handed to Codex" grep -q '^helper|' "$HOME/codex.log"
   check "Codex gets the conversation" grep -qx 'hi' "$HOME/codex.log"
@@ -578,6 +713,55 @@ if command -v jq >/dev/null 2>&1; then
   h=$(bash -c 'for f in common failover; do . "$1/lib/$f.sh"; done; AI_FO_HANDOFF_MAX=5 fo_handoff "$2"' _ "$here" \
     "$HOME/.claude-accounts/a/projects/$wp/sess-123.jsonl")
   check "a long conversation is cut to its end, at a line start" test "$h" = hi
+  echo "failover past codex"
+  ai add agy agy "Antigravity CLI" >/dev/null 2>&1
+  check "order accepts an agent from ai ls" sh -c 'bash "$1/bin/ai" failover order a codex:helper agy | grep -q "agy .*Antigravity CLI: gets the conversation so far, the chain ends here"' _ "$here"
+  check "order refuses Claude or Codex by agent name" eval '! ai failover order codex'
+  only_a
+  : >"$HOME/codex.log"
+  : >"$HOME/agy.log"
+  (cd "$tmp/work" && printf 'y\ny\n' | FAKE_CODEX_LIMIT=1 bash "$here/bin/cla" a) >/dev/null 2>&1
+  check "Codex at its limit is marked limited, with its reset time" sh -c 'bash "$1/bin/ai" failover status | grep -Eq "codex:helper .*limited · (1h59m|2h00m)"' _ "$here"
+  check "the session goes on to agy, with -i" grep -q '^-i You are taking over' "$HOME/agy.log"
+  check "agy gets the Claude conversation" grep -qx 'hi' "$HOME/agy.log"
+  check "and what Codex wrote, as codex" sh -c 'grep -qx "### codex" "$1" && grep -qx "codex did half" "$1"' _ "$HOME/agy.log"
+  check "but not the hand-over again, or what Codex adds itself" sh -c '[ "$(grep -c "You are taking over" "$1")" = 1 ] && ! grep -q environment_context "$1"' _ "$HOME/agy.log"
+  only_a
+  : >"$HOME/agy.log"
+  (cd "$tmp/work" && printf 'y\n\n' | FAKE_CODEX_LIMIT=1 bash "$here/bin/cla" a) >/dev/null 2>&1
+  check "just enter after Codex stays put" test ! -s "$HOME/agy.log"
+  only_a
+  rm -rf "$HOME/.codex-accounts/helper/sessions"
+  (cd "$tmp/work" && printf 'y\n' | bash "$here/bin/cla" a) >/dev/null 2>&1
+  check "Codex that ends without a limit ends the chain" test ! -s "$HOME/agy.log"
+  only_a
+  ai failover order a codex:helper agy >/dev/null 2>&1
+  check "order saves only the names you gave" test "$(tr '\n' ' ' <"$HOME/.config/ai-hub/failover-order")" = "a codex:helper agy "
+  check "Claude accounts you did not name come before Codex" sh -c 'bash "$1/bin/ai" failover status | grep -n "" | grep -E " (main|codex:helper) " | head -n 1 | grep -q " main"' _ "$here"
+  ai failover order a codex:helper b >/dev/null 2>&1
+  only_a
+  rm -f "$HOME/.local/state/ai-hub/limited/b"
+  : >"$HOME/claude.log"
+  (cd "$tmp/work" && printf 'y\ny\n' | FAKE_CODEX_LIMIT=1 bash "$here/bin/cla" a --model opus) >/dev/null 2>&1
+  check "a Claude account after Codex keeps the session's options and gets the conversation" grep -q '^b|--model opus You are taking over' "$HOME/claude.log"
+  only_a
+  cx=$tmp/cx
+  mkdir -p "$cx/sessions/2026/01/02"
+  touch "$tmp/marker"
+  sleep 1
+  wd=$(cd "$tmp/work" && pwd -P)
+  jq -nc --arg d "$wd" '{type: "session_meta", payload: {cwd: $d, source: "cli"}}' >"$cx/sessions/2026/01/02/rollout-i.jsonl"
+  sleep 1
+  jq -nc --arg d "$wd" '{type: "session_meta", payload: {cwd: $d, source: "exec", originator: "codex_exec"}}' >"$cx/sessions/2026/01/02/rollout-e.jsonl"
+  check "a codex exec session (a delegation) is not taken for the interactive one" sh -c 'cd "$4" && CODEX_HOME=$2 bash -c "for f in common providers accounts codex failover; do . \"\$1/lib/\$f.sh\"; done; fo_codex_session main \"\$2\"" _ "$1" "$3" | grep -q "rollout-i.jsonl$"' _ "$here" "$cx" "$tmp/marker" "$tmp/work"
+  wpd=$HOME/.claude-accounts/a/projects/$wp
+  mkdir -p "$wpd"
+  printf '{"type":"user","entrypoint":"sdk-cli","message":{"content":"x"}}\n' >"$wpd/headless.jsonl"
+  check "a claude -p session (a delegation) is not taken for the interactive one" sh -c 'cd "$3" && bash -c "for f in common providers accounts codex failover; do . \"\$1/lib/\$f.sh\"; done; fo_transcript a \"\$2\"" _ "$1" "$2" | grep -q headless && exit 1 || exit 0' _ "$here" "$tmp/marker" "$tmp/work"
+  rm -f "$wpd/headless.jsonl"
+  ai failover clear >/dev/null 2>&1
+  ai rm agy >/dev/null 2>&1
+  check "ai rm takes an agent out of the failover order" eval "! grep -qx agy \"$HOME/.config/ai-hub/failover-order\""
   ai codex mv helper aide >/dev/null 2>&1
   check "ai codex mv keeps its place in the order" grep -qx 'codex:aide' "$HOME/.config/ai-hub/failover-order"
   ai failover clear >/dev/null 2>&1

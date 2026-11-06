@@ -24,8 +24,17 @@ AI_TEAMS=$AI_CONFIG_DIR/teams # the team of each member that leads one: teams/<m
 AI_TEAM_DIR=$AI_STATE_DIR/team # logs/, journal, locks/
 # how each agent runs headless, after its saved command (override by env, or per member)
 AI_TEAM_CLAUDE_OPTS=${AI_TEAM_CLAUDE_OPTS:---permission-mode acceptEdits}
+# A Claude member starts lean: only the tools it needs to code, no MCP servers, skills or
+# commands. Measured on Claude Code 2.1: ~7.7k tokens before the task instead of ~24k with
+# everything loaded. Empty = load everything, like a normal session.
+AI_TEAM_CLAUDE_LEAN=${AI_TEAM_CLAUDE_LEAN---strict-mcp-config --disable-slash-commands --tools=Read,Edit,Write,Bash,Glob,Grep}
+# Added to every delegated task, so a reply that goes back up stays short. Empty = none.
+AI_TEAM_REPORT=${AI_TEAM_REPORT-When you are done, reply with a short report (at most 15 lines): whether it is done, the files you changed, how you checked it, and anything left open. Do not paste code or whole files: they are in the folder.}
+AI_TEAM_HANDOFF=${AI_TEAM_HANDOFF:-1} # a member that stops at its usage limit hands its task to the next free member (0 = off)
+AI_TEAM_HANDOFF_MAX=${AI_TEAM_HANDOFF_MAX:-4000} # the most of its reply passed on, in bytes (the end is kept)
 AI_TEAM_CODEX_OPTS=${AI_TEAM_CODEX_OPTS:---sandbox workspace-write --skip-git-repo-check}
 AI_TEAM_GEMINI_OPTS=${AI_TEAM_GEMINI_OPTS:---approval-mode auto_edit}
+AI_TEAM_AGY_OPTS=${AI_TEAM_AGY_OPTS:---mode accept-edits --disable-slash-commands} # Antigravity CLI
 AI_TEAM_WAIT=${AI_TEAM_WAIT:-3600} # the most a delegation waits for the folder, in seconds
 AI_TEAM_MAX_DEPTH=${AI_TEAM_MAX_DEPTH:-3} # levels of delegation below the lead
 AI_TEAM_WAIT_STEP=${AI_TEAM_WAIT_STEP:-540} # `ai team wait` returns after this long (an agent's shell call times out at 10m)
@@ -90,14 +99,17 @@ ai_team() {
     log) team_log "${2:-}" ;;
     wait) shift; team_wait "$@" ;;
     setup) team_setup ;;
+    discover) shift; team_discover "$@" ;;
     access) shift; team_access "$@" ;;
-    *) die "usage: ai team [setup | ls | add | rm | lead | access | log | wait | brief | help]   (no argument: start the lead)" ;;
+    *) die "usage: ai team [setup | discover | ls | add | rm | lead | access | log | wait | brief | help]   (no argument: start the lead)" ;;
   esac
 }
 
 team_help() {
   cat <<'EOF'
 ai team setup                             set up the team by answering a few questions (the easy way)
+ai team discover [member...]              the members say what they do best and the lead proposes who does
+                                          what (roles and sub-teams); you say y before it changes anything
 ai do "<task>"                            start the lead here with a task; it hands parts to the team itself
 ai team                                   start the lead here with a brief of its team (extra args go to the lead)
 ai team ls                                show the lead and the members
@@ -121,7 +133,9 @@ the same with its part, up to AI_TEAM_MAX_DEPTH levels (default 3). Members edit
 directly, one at a time per team. Delegating to codex:<name> or another agent sends the task and
 this folder's files to that provider.
 Logs are readable only by you, and kept AI_TEAM_KEEP_DAYS days (default 30, 0 = forever).
-Headless options: AI_TEAM_CLAUDE_OPTS, AI_TEAM_CODEX_OPTS, AI_TEAM_GEMINI_OPTS (see lib/team.sh)
+Headless options: AI_TEAM_CLAUDE_OPTS, AI_TEAM_CLAUDE_LEAN, AI_TEAM_CODEX_OPTS, AI_TEAM_AGY_OPTS,
+AI_TEAM_GEMINI_OPTS. Tokens and hand-over: AI_TEAM_REPORT, AI_TEAM_HANDOFF, AI_TEAM_HANDOFF_MAX.
+All the settings: README, "Settings".
 EOF
 }
 
@@ -230,11 +244,11 @@ team_forget() {
   [ "$(head -n 1 "$AI_TEAM_LEAD" 2>/dev/null)" = "$1" ] && rm -f "$AI_TEAM_LEAD" && hit=0
   return "$hit"
 }
-# forget_member <name>: team_forget and fo_forget, saying what was cleaned up
+# forget_member <name> [account]: team_forget and fo_forget, saying what was cleaned up
 forget_member() {
   local what=
   team_forget "$1" && what="the team"
-  fo_forget "$1" && what="${what:+$what and }the failover order"
+  fo_forget "$1" "${2:-}" && what="${what:+$what and }the failover order"
   [ -z "$what" ] || echo "also removed $1 from $what"
 }
 
@@ -262,7 +276,7 @@ team_show_tree() {
   [ -n "$1" ] && p="$2└ "
   while IFS="$TAB" read -r m r c; do
     [ -n "$m" ] || continue
-    if team_is_claude "$m" && left=$(fo_limited "$m"); then
+    if left=$(fo_limited "$m"); then
       printf '%s[1;36m%-14s[0m %-36s [33mlimited · %dh%02dm left[0m
 ' "$p" "$m" "$r" $((left / 3600)) $((left % 3600 / 60))
     elif team_member_ok "$m"; then
@@ -311,9 +325,10 @@ team_default_cmd() {
   esac
   a=$(team_access_opts "$agent") # the extra folders of `ai team access`
   case $agent in
-    claude) cmd_insert "$c" "${a:+$a }-p $AI_TEAM_CLAUDE_OPTS" ;;
+    claude) cmd_insert "$c" "${a:+$a }-p $AI_TEAM_CLAUDE_OPTS${AI_TEAM_CLAUDE_LEAN:+ $AI_TEAM_CLAUDE_LEAN}" ;;
     codex) cmd_insert "$c" "exec ${a:+$a }$AI_TEAM_CODEX_OPTS" ;;
     gemini | qwen) cmd_insert "$c" "${a:+$a }$AI_TEAM_GEMINI_OPTS -p" ;;
+    agy) cmd_insert "$c" "${a:+$a }$AI_TEAM_AGY_OPTS -p" ;;
     opencode) cmd_insert "$c" "run" ;;
     *) return 1 ;;
   esac
@@ -346,7 +361,7 @@ Team members and what each is good at:
 EOF
   else
     cat <<EOF
-You are "$of", a member of a team of AI coding agents working in this folder, and you lead a team of your own. You were handed a task by "$from". Do yourself what you are best at and hand parts of it to the member of your team best suited for them with the \`ai delegate\` command. You stay responsible for your part: check what a member returns and fix or re-delegate when needed. Your final reply goes back to "$from": end it with a short summary of what was done and by whom, the files that changed, and anything left open.
+You are "$of", a member of a team of AI coding agents working in this folder, and you lead a team of your own. You were handed a task by "$from". Do yourself what you are best at and hand parts of it to the member of your team best suited for them with the \`ai delegate\` command. You stay responsible for your part: check what a member returns and fix or re-delegate when needed. Your final reply goes back to "$from" as a short report: what was done and by whom, the files that changed, how it was checked, and anything left open.
 
 Your team members and what each is good at:
 EOF
@@ -365,9 +380,13 @@ Rules:
 - A member knows nothing of this conversation. Write the task like a ticket: the goal, the files involved, what "done" looks like, and what not to touch.
 - Members edit files here directly. Delegations run one at a time per team (the next one waits), so send independent tasks together, but do not touch the same files yourself while a member has them.
 - A delegation can take minutes: run it with a long timeout (up to 10 minutes), or with -b and then ai team wait.
-- A member marked "leads a team" hands parts of its task on to its own members; you only talk to your own members.
-- A member at its usage limit is refused: pick another one.
+- A member marked "leads a team" hands parts of its task on to its own members; you only talk to your own members. Give such a member only a big task with several parts: for one small job, pick a member that does it itself.
+- A member at its usage limit is refused: pick another one. One that stops at its limit while working hands the task, and what it did so far, to the next free member by itself; the reply says who finished it.
 - Past delegations: ai team log   (the full reply of each one is kept under $AI_TEAM_DIR/logs)
+Save tokens (every member pays for what it reads and writes):
+- Do a small change (a few lines) yourself; delegating it costs more than doing it. Delegate a big part that a member can finish on its own.
+- Put what you already know in the task: the exact files and functions, the error, what you found. Then the member does not search for it again.
+- Replies are short reports. Check them cheaply: run the tests and \`git diff --stat\`, then read only the changes that matter. Do not read again a whole file a member reported on, and do not redo a check a member that leads a team already did.
 BRIEF
 }
 team_brief_members() {
@@ -393,6 +412,7 @@ team_start() {
 $(team_access_dirs)
 EOF
   PATH=$AI_HOME/bin:$PATH
+  export AI_TEAM_LEADING=1 # a failover hand-over to Codex or another agent tells it so
   case $lead in
     # Codex has no system prompt option: the brief is its first message
     codex:*)
@@ -463,7 +483,7 @@ team_unlock() {
 }
 
 ai_delegate() {
-  local bg='' m task c log left f by=${AI_TEAM_AS:-} chain=${AI_TEAM_CHAIN:-} whose=the
+  local bg='' m task c log left f by=${AI_TEAM_AS:-} chain=${AI_TEAM_CHAIN:-} whose=the rc tried title
   [ -n "$by" ] && whose="$by's"
   case ${1:-} in -b | --background) bg=1; shift ;; esac
   m=${1:-}
@@ -483,7 +503,7 @@ ai_delegate() {
   fi
   [ -n "$task" ] || die "the task is empty"
   c=$(team_cmd "$m" "$f") || die "ai doesn't know how to run '$m' headless. give the command: ai team add ${by:+--of $by }$m \"<good at>\" \"<command>\""
-  if team_is_claude "$m" && left=$(fo_limited "$m"); then
+  if left=$(fo_limited "$m"); then
     die "$m is at its usage limit for another $((left / 3600))h$((left % 3600 / 60))m. pick another member (see: ai failover status)"
   fi
   team_private || return 1
@@ -496,17 +516,42 @@ ai_delegate() {
     echo "started $m in the background. its reply goes to $log (wait for it: ai team wait $log)"
     return 0
   fi
-  team_work "$m" "$c" "$task" "$log"
+  # a member that stops at its usage limit hands the task on (team_work sets TEAM_NEXT); the
+  # whole chain writes to one log, so `ai team wait` sees one delegation
+  title=$(printf '%s' "$task" | head -n 1 | cut -c1-80)
+  tried=" $m "
+  while :; do
+    TEAM_NEXT=
+    team_work "$m" "$c" "$task" "$log" "$title" "$f" "$tried"
+    rc=$?
+    [ -n "$TEAM_NEXT" ] || return "$rc"
+    task=$(team_handoff_task "$m" "$task" "$TEAM_REPLY")
+    m=$TEAM_NEXT
+    tried="$tried$m "
+    c=$(team_cmd "$m" "$f") || {
+      team_end "$log" "$rc"
+      return "$rc"
+    }
+  done
+}
+# team_end <log> <exit code>: end a log that did not get its own end line (it waited for the
+# folder too long, or the member that should take over can't run), so `ai team wait` stops
+team_end() {
+  (umask 077 && printf '# done (exit %s) in 0m00s\n' "$2" >>"$1")
 }
 
-# team_work <member> <command> <task> <log>: run it, print its reply, keep the log and a journal line
+# team_work <member> <command> <task> <log> [journal title] [members file] [tried]: run it,
+# print its reply, keep the log and a journal line. When it stops at its usage limit and
+# another member is free, sets TEAM_NEXT (and TEAM_REPLY, what it wrote) instead of ending the log.
 team_work() {
-  local m=$1 c=$2 task=$3 log=$4 start rc secs by=${AI_TEAM_AS:-} chain
+  local m=$1 c=$2 task=$3 log=$4 title=${5:-} f=${6:-} tried=${7:-} start rc jrc secs by=${AI_TEAM_AS:-} chain at reply next=''
   local -a extra=()
+  [ -n "$title" ] || title=$(printf '%s' "$3" | head -n 1 | cut -c1-80)
+  [ -n "$f" ] || f=$(team_mine)
   chain=${AI_TEAM_CHAIN:+$AI_TEAM_CHAIN }$m
   # a member that leads a team (and is not at the bottom) gets its brief, and may delegate
   if team_leads "$m" && [ "$(AI_TEAM_CHAIN=$chain team_depth)" -lt "$AI_TEAM_MAX_DEPTH" ]; then
-    if team_is_claude "$m" && [ -z "$(tsv_get "$(team_mine)" "$m" 3)" ]; then
+    if team_is_claude "$m" && [ -z "$(tsv_get "$f" "$m" 3)" ]; then
       extra=("${TEAM_ALLOW[@]}" --append-system-prompt "$(team_brief "$m" "${by:-$(team_lead)}")")
     else
       task="$(team_brief "$m" "${by:-$(team_lead)}")
@@ -515,30 +560,86 @@ team_work() {
 $task"
     fi
   fi
-  team_lock || return 1
+  [ -n "$AI_TEAM_REPORT" ] && task="$task
+
+$AI_TEAM_REPORT"
+  team_lock || {
+    team_end "$log" 1
+    return 1
+  }
   (umask 077 && : >>"$log") || return 1 # only here: the member itself runs with your umask
   printf 'ai: %s is working on it in %s  (log: %s)\n' "$m" "$PWD" "$log" >&2
-  printf '# %s · %s · %s\n# task:\n%s\n# reply:\n' "$(date '+%Y-%m-%d %H:%M')" "$m" "$PWD" "$task" >"$log"
+  printf '# %s · %s · %s\n# task:\n%s\n# reply:\n' "$(date '+%Y-%m-%d %H:%M')" "$m" "$PWD" "$task" >>"$log"
+  at=$(wc -c <"$log" | tr -d ' ') # where its reply starts: the task is never read as its reply
   start=$(date +%s)
+  # the last stage fails when the member printed nothing (its reason, if any, went to the log)
   AI_TEAM_AS=$m AI_TEAM_CHAIN=$chain PATH=$AI_HOME/bin:$PATH \
-    team_run "$m" "$c" "${extra[@]}" "$task" </dev/null 2>>"$log" | tee -a "$log"
-  rc=${PIPESTATUS[0]}
+    team_run "$m" "$c" "${extra[@]}" "$task" </dev/null 2>>"$log" | tee -a "$log" |
+    awk '{ print; fflush() } END { exit NR == 0 }'
+  local -a st=("${PIPESTATUS[@]}")
+  rc=${st[0]}
   secs=$(($(date +%s) - start))
   team_unlock
-  printf '# done (exit %s) in %dm%02ds\n' "$rc" $((secs / 60)) $((secs % 60)) >>"$log"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$m" "$PWD" "$rc" "$secs" "$log" \
-    "$(printf '%s' "$3" | head -n 1 | cut -c1-80)" "$by" >>"$AI_TEAM_DIR/journal"
-  if [ "$rc" -eq 0 ]; then
+  if [ "$rc" -ne 0 ]; then
+    reply=$(tail -c +"$((at + 1))" "$log")
+    # only its last lines: the CLIs print a limit error last, and a member that printed code or
+    # output about "usage limits" while it worked is not mistaken for one at its limit
+    if fo_hit_limit "$(printf '%s' "$reply" | tail -n 5)"; then
+      mkdir -p "$AI_STATE_DIR/limited" && { has jq && fo_reset_at "$m" "$(printf '%s' "$reply" | tail -n 5)"; } >"$(fo_mark "$m")"
+      warn "$m hit its usage limit and is skipped until it resets (see: ai failover status)"
+      [ "$AI_TEAM_HANDOFF" = 0 ] || next=$(team_backup "$f" "$tried")
+    fi
+  fi
+  jrc=$rc
+  [ -n "$next" ] && jrc=handoff # not an end: `ai team wait` waits for the one that takes over
+  if [ -n "$next" ]; then
+    printf '# %s stopped at its usage limit after %dm%02ds: handed over to %s\n' "$m" $((secs / 60)) $((secs % 60)) "$next" >>"$log"
+  else
+    printf '# done (exit %s) in %dm%02ds\n' "$rc" $((secs / 60)) $((secs % 60)) >>"$log"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$m" "$PWD" "$jrc" "$secs" "$log" \
+    "$title" "$by" >>"$AI_TEAM_DIR/journal"
+  if [ "$rc" -eq 0 ] && [ "${st[2]}" -ne 0 ]; then
+    printf 'ai: %s ended (%dm%02ds) without a reply. the end of its log:\n' "$m" $((secs / 60)) $((secs % 60)) >&2
+    tail -c +"$((at + 1))" "$log" | tail -n 5 >&2
+  elif [ "$rc" -eq 0 ]; then
     printf 'ai: %s is done (%dm%02ds)\n' "$m" $((secs / 60)) $((secs % 60)) >&2
+  elif [ -n "$next" ]; then
+    warn "handing the task to $next, with what $m did so far ($(team_provider "$next") gets it)"
+    TEAM_NEXT=$next
+    TEAM_REPLY=$reply
   else
     printf 'ai: %s failed (exit %s). the end of its log:\n' "$m" "$rc" >&2
     tail -n 5 "$log" >&2
-    if team_is_claude "$m" && fo_hit_limit "$(tail -c 4000 "$log")"; then
-      mkdir -p "$AI_STATE_DIR/limited" && { has jq && fo_reset_at "$m" "$(tail -c 4000 "$log")"; } >"$(fo_mark "$m")"
-      warn "$m hit its usage limit and is skipped until it resets (see: ai failover status)"
-    fi
   fi
   return "$rc"
+}
+
+# team_backup <members file> <tried>: the member to hand a task to when one stops at its
+# limit: in failover order first, then in team order; not tried yet, not higher up the
+# chain, not limited, and runnable headless
+team_backup() {
+  local a
+  { fo_order 2>/dev/null; cut -f1 "$1"; } | awk 'NF && !seen[$0]++' | while IFS= read -r a; do
+    [ -n "$(tsv_get "$1" "$a" 1)" ] || continue
+    case "$2 ${AI_TEAM_CHAIN:-} " in *" $a "*) continue ;; esac
+    team_member_ok "$a" || continue
+    fo_limited "$a" >/dev/null && continue
+    team_cmd "$a" "$1" >/dev/null || continue
+    echo "$a"
+    break
+  done
+}
+
+# team_handoff_task <member> <its task> <what it wrote>: the task for the member taking over
+team_handoff_task() {
+  local r
+  r=$(printf '%s' "$3" | tail -c "$AI_TEAM_HANDOFF_MAX")
+  printf '%s\n' "\"$1\" started this task and stopped at its usage limit. You take it over. It may already have changed files here: look at \`git status\` and \`git diff\` first, keep what is done, and finish the rest.
+
+# The task
+$2"
+  [ -z "$r" ] || printf '\n# What "%s" wrote before it stopped (the end)\n%s\n' "$1" "$r"
 }
 
 # Logs hold whole tasks and replies (often code), so the team folder is yours alone:
@@ -561,7 +662,8 @@ team_private() {
 team_done() {
   [ -f "$1" ] || return 1
   tail -n 1 "$1" | grep -q '^# done (exit [0-9]*) in [0-9]*m[0-9]*s$' && return 0
-  [ -f "$AI_TEAM_DIR/journal" ] && awk -F'\t' -v l="$1" '$6 == l { f = 1 } END { exit !f }' "$AI_TEAM_DIR/journal"
+  # a member that handed the task over has a journal line too, with "handoff" for its exit code
+  [ -f "$AI_TEAM_DIR/journal" ] && awk -F'\t' -v l="$1" '$6 == l && $4 ~ /^[0-9]+$/ { f = 1 } END { exit !f }' "$AI_TEAM_DIR/journal"
 }
 
 # team_prune [days]: delete the logs of finished delegations older than that (default
@@ -603,7 +705,11 @@ team_log() {
   }
   tail -n "$n" "$AI_TEAM_DIR/journal" | while IFS="$TAB" read -r t m d rc s l task by; do
     [ -f "$l" ] || l="$l (deleted)"
-    if [ "$rc" = 0 ]; then rc=$(printf '\033[32mok\033[0m'); else rc=$(printf '\033[31mexit %s\033[0m' "$rc"); fi
+    case $rc in
+      0) rc=$(printf '\033[32mok\033[0m') ;;
+      handoff) rc=$(printf '\033[33mhanded over\033[0m') ;;
+      *) rc=$(printf '\033[31mexit %s\033[0m' "$rc") ;;
+    esac
     printf '%s  \033[1;36m%-14s\033[0m %s  %dm%02ds  %s\n      %s\n' "$t" "$m" "$rc" $((s / 60)) $((s % 60)) "$task" "$(dim "${by:+from $by · }$d · $l")"
   done
 }
@@ -627,6 +733,7 @@ team_wait() {
   done
   for f in "$@"; do
     printf '=== %s\n' "$(head -n 1 "$f" | sed 's/^# //')"
-    sed -n '/^# reply:$/,$p' "$f" | sed '1d'
+    # after a hand-over, only the reply of the member that finished
+    awk 'NR == FNR { if ($0 == "# reply:") n = FNR; next } FNR > n' "$f" "$f"
   done
 }
