@@ -145,7 +145,7 @@ cla_rm() {
   mv "$CLA_ROOT/$n" "$t" || die "could not move $CLA_ROOT/$n"
   rm -f "$AI_STATE_DIR/limited/$n"
   echo "moved '$n' to $t"
-  forget_member "$n"
+  forget_member "$n" account
   echo "tip: to also sign it out, move it back, start it and type /logout"
 }
 
